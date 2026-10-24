@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Lets client apps see and bind to AI Core Hub (package visibility, Android 11+). -->
+    <queries>
+        <package android:name="com.n3ttx.aicore" />
+    </queries>
+</manifest>
