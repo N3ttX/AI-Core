@@ -1,0 +1,15 @@
+# Android / Gradle
+.gradle/
+build/
+local.properties
+.idea/
+.kotlin/
+*.iml
+captures/
+.cxx/
+.DS_Store
+
+# Signierung und Geheimnisse
+*.jks
+*.keystore
+*.apk

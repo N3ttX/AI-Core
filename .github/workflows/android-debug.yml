@@ -1,0 +1,58 @@
+name: Android Debug-Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-debug-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Code holen
+        uses: actions/checkout@v4
+
+      - name: Java einrichten
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Gradle einrichten
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Debug-Key stabil halten
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: android-debug-keystore-v1
+
+      - name: Gradle-Wrapper ausführbar machen
+        run: chmod +x ./gradlew
+
+      - name: Debug-APK bauen
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: APK umbenennen
+        run: |
+          APK=$(find . -path '*/build/outputs/apk/debug/*.apk' | head -n 1)
+          cp "$APK" "${{ github.event.repository.name }}-debug-${{ github.run_number }}.apk"
+
+      - name: GitHub-Release erstellen
+        run: |
+          gh release create "build-${{ github.run_number }}" \
+            "${{ github.event.repository.name }}-debug-${{ github.run_number }}.apk" \
+            --target "$GITHUB_SHA" \
+            --title "Debug-Build ${{ github.run_number }}" \
+            --generate-notes
