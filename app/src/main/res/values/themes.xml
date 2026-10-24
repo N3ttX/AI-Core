@@ -1,3 +1,7 @@
 <resources>
     <style name="Theme.AICore" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <style name="Theme.AICore.Dialog" parent="android:Theme.Material.Light.Dialog.NoActionBar">
+        <item name="android:windowBackground">@android:color/transparent</item>
+    </style>
 </resources>

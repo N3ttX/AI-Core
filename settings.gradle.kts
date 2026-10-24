@@ -21,4 +21,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "AI-Core"
-include(":app")
+include(":app", ":sdk", ":engine")
