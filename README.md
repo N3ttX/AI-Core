@@ -6,8 +6,12 @@ or load their own copy of a model: AI Core Hub downloads each model once, keeps
 it in memory once and shares it between all connected apps.
 
 - **Text generation** (chat or raw prompt, streaming, JSON mode, GBNF grammars)
-  and **embeddings**.
-- Runs [llama.cpp](https://github.com/ggml-org/llama.cpp) (GGUF models) on the CPU.
+  and **text embeddings** with [llama.cpp](https://github.com/ggml-org/llama.cpp) (GGUF).
+- **Image search** (CLIP, MobileCLIP, SigLIP 2 image + text embeddings), **face detection and
+  recognition** (InsightFace SCRFD + ArcFace) and **any ONNX model** with raw tensors, with
+  [ONNX Runtime](https://onnxruntime.ai).
+- Works with the [Lumen](https://github.com/Endermen9932/lumen) gallery: same model ids and
+  identical preprocessing. See [docs/INTEGRATION.md](docs/INTEGRATION.md).
 - A catalog of recommended models, plus any GGUF from Hugging Face, a direct
   URL or a local file. Client apps can ask for models; the user confirms.
 - New client apps must be approved by the user once. Approvals are bound to the
@@ -24,7 +28,7 @@ Builds run on GitHub Actions; every merge to `main` publishes a debug APK under
 | Module | Contents |
 |---|---|
 | `app` | The AI Core Hub app: UI, model catalog and downloads, access control, `AICoreService` |
-| `engine` | JNI bridge to llama.cpp (fetched at build time, pinned in `engine/src/main/cpp/CMakeLists.txt`) |
+| `engine` | JNI bridge to llama.cpp (fetched at build time, pinned in `engine/src/main/cpp/CMakeLists.txt`) and the ONNX Runtime tasks (image-text, faces) |
 | `sdk` | Client library for other apps: AIDL interface and `AICoreClient` |
 
 ## How it works
@@ -45,6 +49,9 @@ callbacks. The prompt prefix of the previous request on the same model is
 reused from the KV cache, so multi-turn chats only process the new messages.
 
 ## Using it from another app
+
+The full API (images, faces, raw ONNX, model packages) is described in
+[docs/INTEGRATION.md](docs/INTEGRATION.md). The basics:
 
 1. Copy the `sdk` module into your project (or depend on it as a Gradle project)
    and add `implementation(project(":sdk"))`. The SDK's manifest already declares

@@ -28,6 +28,15 @@ import com.n3ttx.aicore.sdk.AICoreContract.ModelType
 import com.n3ttx.aicore.sdk.IAICoreService
 import com.n3ttx.aicore.sdk.IEmbeddingCallback
 import com.n3ttx.aicore.sdk.IGenerationCallback
+import com.n3ttx.aicore.sdk.IResultCallback
+import com.n3ttx.aicore.sdk.Tensor
+import com.n3ttx.aicore.sdk.AICoreContract.Task
+import com.n3ttx.aicore.data.CatalogEntry
+import com.n3ttx.aicore.engine.onnx.FaceAnalyzer
+import com.n3ttx.aicore.engine.onnx.ImageTextConfig
+import com.n3ttx.aicore.engine.onnx.ImageTextEncoder
+import ai.onnxruntime.OnnxTensor
+import org.json.JSONObject
 import kotlinx.coroutines.CancellationException
 
 /** The bound service other apps talk to. See IAICoreService.aidl. */
@@ -73,11 +82,25 @@ class AICoreService : Service() {
     private fun resolveModel(id: String?, type: String): ModelSpec? =
         if (id.isNullOrBlank()) g.defaultModel(type) else g.store.get(id)
 
+    private fun tasksOf(type: String): List<String> = when (type) {
+        ModelType.CHAT -> listOf(Task.CHAT, Task.COMPLETION, Task.JSON_MODE, Task.GRAMMAR, Task.TOKENIZE)
+        ModelType.EMBEDDING -> listOf(Task.TEXT_EMBEDDING, Task.TOKENIZE)
+        ModelType.IMAGE_TEXT -> listOf(Task.IMAGE_EMBEDDING, Task.MULTIMODAL_TEXT_EMBEDDING, Task.TOKENIZE, Task.ONNX_INFERENCE)
+        ModelType.FACE -> listOf(Task.FACE_DETECTION, Task.FACE_EMBEDDING, Task.ONNX_INFERENCE)
+        else -> listOf(Task.ONNX_INFERENCE)
+    }
+
     private fun modelBundle(spec: ModelSpec, isDefault: Boolean) = Bundle().apply {
         putString(Key.ID, spec.id)
         putString(Key.NAME, spec.name)
         putString(Key.TYPE, spec.type)
-        putLong(Key.SIZE_BYTES, spec.sizeBytes)
+        putString(Key.ENGINE, spec.engine)
+        putStringArray(Key.TASKS, tasksOf(spec.type).toTypedArray())
+        spec.config?.let { putString(Key.CONFIG, it) }
+        putStringArray(Key.COMPONENTS, spec.files.filter { it.localName.endsWith(".onnx") }.map { it.role }.toTypedArray())
+        spec.description?.let { putString(Key.DESCRIPTION, it) }
+        spec.configJson()?.optInt("embedding_dim")?.takeIf { it > 0 }?.let { putInt(Key.EMBEDDING_DIM, it) }
+        putLong(Key.SIZE_BYTES, spec.totalBytes)
         putInt(Key.CONTEXT_LENGTH, spec.contextLength)
         putStringArray(Key.LANGUAGES, spec.languages.toTypedArray())
         putBoolean(Key.IS_DEFAULT, isDefault)
@@ -140,15 +163,15 @@ class AICoreService : Service() {
         override fun listModels(): Bundle {
             val auth = authorize()
             if (auth is Auth.Rejected) return error(auth.code, auth.message)
-            val chat = g.defaultModel(ModelType.CHAT)?.id
-            val embedding = g.defaultModel(ModelType.EMBEDDING)?.id
+            val defaults = ModelType.ALL.mapNotNull { t -> g.defaultModel(t)?.let { t to it.id } }.toMap()
             return Bundle().apply {
                 putParcelableArrayList(
                     Key.MODELS,
-                    ArrayList(g.store.installed.value.map { modelBundle(it, it.id == chat || it.id == embedding) }),
+                    ArrayList(g.store.installed.value.map { modelBundle(it, it.id in defaults.values) }),
                 )
-                chat?.let { putString(Key.DEFAULT_CHAT_MODEL, it) }
-                embedding?.let { putString(Key.DEFAULT_EMBEDDING_MODEL, it) }
+                defaults[ModelType.CHAT]?.let { putString(Key.DEFAULT_CHAT_MODEL, it) }
+                defaults[ModelType.EMBEDDING]?.let { putString(Key.DEFAULT_EMBEDDING_MODEL, it) }
+                putBundle(Key.DEFAULTS, Bundle().apply { defaults.forEach { (t, id) -> putString(t, id) } })
             }
         }
 
@@ -162,8 +185,26 @@ class AICoreService : Service() {
             val model: ModelSpec
             val fromCatalog: Boolean
             val catalogEntry = id?.let { g.catalog.find(it) }
+            val packageJson = spec.getString(Key.PACKAGE)
             when {
                 id != null && g.store.get(id) != null -> return status(ModelRequestStatus.INSTALLED)
+                packageJson != null && catalogEntry == null -> {
+                    val entry = try {
+                        CatalogEntry.fromJson(JSONObject(packageJson))
+                    } catch (e: Exception) {
+                        return error(Error.INVALID_REQUEST, "Invalid package: ${e.message}")
+                    }
+                    if (entry.type !in ModelType.ALL) return error(Error.INVALID_REQUEST, "Unknown model type ${entry.type}")
+                    if (entry.files.isEmpty() && !entry.url.startsWith("https://")) return error(Error.INVALID_REQUEST, "Package needs files or an https url")
+                    if (entry.files.any { it.path.contains("..") || (it.path.contains("://") && !it.path.startsWith("https://")) }) {
+                        return error(Error.INVALID_REQUEST, "Invalid file path in package")
+                    }
+                    if (entry.files.isNotEmpty() && entry.repo == null && entry.files.any { !it.path.startsWith("https://") }) {
+                        return error(Error.INVALID_REQUEST, "Package files need a repo or full https URLs")
+                    }
+                    model = ModelSpec.fromCatalog(entry)
+                    fromCatalog = false
+                }
                 catalogEntry != null -> {
                     model = ModelSpec.fromCatalog(catalogEntry)
                     fromCatalog = true
@@ -266,24 +307,42 @@ class AICoreService : Service() {
             val texts = request.getStringArray(Key.TEXTS)?.toList().orEmpty()
             if (texts.isEmpty()) return error(Error.INVALID_REQUEST, "No texts given")
             if (texts.size > MAX_EMBED_TEXTS) return error(Error.INVALID_REQUEST, "At most $MAX_EMBED_TEXTS texts per request")
-            val spec = resolveModel(request.getString(Key.MODEL), ModelType.EMBEDDING)
-                ?: return error(Error.MODEL_NOT_INSTALLED, "Model is not installed: ${request.getString(Key.MODEL) ?: "no embedding model"}")
-            if (spec.type != ModelType.EMBEDDING) return error(Error.INVALID_REQUEST, "${spec.name} is not an embedding model")
+            val type = request.getString(Key.TYPE) ?: ModelType.EMBEDDING
+            val spec = resolveModel(request.getString(Key.MODEL), type)
+                ?: return error(Error.MODEL_NOT_INSTALLED, "Model is not installed: ${request.getString(Key.MODEL) ?: "no $type model"}")
+            if (spec.type != ModelType.EMBEDDING && spec.type != ModelType.IMAGE_TEXT) {
+                return error(Error.INVALID_REQUEST, "${spec.name} does not embed text")
+            }
             val normalize = request.getBoolean(Key.NORMALIZE, true)
             val requestId = g.runtime.newRequestId()
 
             g.runtime.submit(requestId, caller.uid) {
                 val started = System.currentTimeMillis()
                 try {
-                    val dim = g.runtime.withModel(requestId, spec, caller.label, "embed") { model ->
-                        var dim = 0
-                        texts.forEachIndexed { i, text ->
-                            if (g.runtime.isCancelled(requestId)) throw CancellationException("Cancelled")
-                            val v = model.embed(text, normalize)
-                            dim = v.size
-                            callback.onEmbedding(requestId, i, v)
+                    val each: (Int, FloatArray) -> Unit = { i, v -> callback.onEmbedding(requestId, i, v) }
+                    val dim = if (spec.type == ModelType.IMAGE_TEXT) {
+                        g.runtime.withOnnx(requestId, spec, caller.label, "embed text") { model ->
+                            val encoder = ImageTextEncoder(model, ImageTextConfig.from(spec.configJson()))
+                            var dim = 0
+                            texts.forEachIndexed { i, text ->
+                                if (g.runtime.isCancelled(requestId)) throw CancellationException("Cancelled")
+                                val v = encoder.embedText(text)
+                                dim = v.size
+                                each(i, v)
+                            }
+                            dim
                         }
-                        dim
+                    } else {
+                        g.runtime.withModel(requestId, spec, caller.label, "embed") { model ->
+                            var dim = 0
+                            texts.forEachIndexed { i, text ->
+                                if (g.runtime.isCancelled(requestId)) throw CancellationException("Cancelled")
+                                val v = model.embed(text, normalize)
+                                dim = v.size
+                                each(i, v)
+                            }
+                            dim
+                        }
                     }
                     callback.onComplete(requestId, Bundle().apply {
                         putString(Key.MODEL, spec.id)
@@ -312,6 +371,7 @@ class AICoreService : Service() {
             request ?: return error(Error.INVALID_REQUEST, "Missing request")
             val spec = resolveModel(request.getString(Key.MODEL), ModelType.CHAT)
                 ?: return error(Error.MODEL_NOT_INSTALLED, "Model is not installed")
+            if (spec.engine != AICoreContract.Engine.LLAMA) return error(Error.INVALID_REQUEST, "Use tokenize for ${spec.name}")
             // Binder threads may block; this waits for the inference thread.
             return try {
                 val count = kotlinx.coroutines.runBlocking {
@@ -324,10 +384,250 @@ class AICoreService : Service() {
                 error(codeOf(e), e.message ?: e.javaClass.simpleName)
             }
         }
+
+        override fun embedImages(request: Bundle?, callback: IEmbeddingCallback?): Bundle {
+            val auth = authorize()
+            if (auth is Auth.Rejected) return error(auth.code, auth.message)
+            val caller = (auth as Auth.Ok).caller
+            if (request == null || callback == null) return error(Error.INVALID_REQUEST, "Missing request or callback")
+            val spec = resolveModel(request.getString(Key.MODEL), ModelType.IMAGE_TEXT)
+                ?: return error(Error.MODEL_NOT_INSTALLED, "Model is not installed: ${request.getString(Key.MODEL) ?: "no image model"}")
+            if (spec.type != ModelType.IMAGE_TEXT) return error(Error.INVALID_REQUEST, "${spec.name} is not an image-text model")
+            val images = try {
+                ImageSource.listFrom(request)
+            } catch (e: Exception) {
+                return error(Error.INVALID_REQUEST, e.message ?: "Invalid images")
+            }
+            if (images.isEmpty()) return error(Error.INVALID_REQUEST, "No images given")
+            if (images.size > MAX_BATCH) return error(Error.INVALID_REQUEST, "At most $MAX_BATCH images per request")
+            val config = ImageTextConfig.from(spec.configJson())
+            val maxDim = request.getInt(Key.MAX_DIMENSION, 0).takeIf { it > 0 } ?: (config.imageSize * 3)
+            val requestId = g.runtime.newRequestId()
+
+            g.runtime.submit(requestId, caller.uid) {
+                val started = System.currentTimeMillis()
+                try {
+                    val dim = g.runtime.withOnnx(requestId, spec, caller.label, "embed images") { model ->
+                        val encoder = ImageTextEncoder(model, config)
+                        var dim = 0
+                        images.forEachIndexed { i, image ->
+                            if (g.runtime.isCancelled(requestId)) throw CancellationException("Cancelled")
+                            val bitmap = image.decode(maxDim)
+                            val v = encoder.embedImage(bitmap)
+                            dim = v.size
+                            callback.onEmbedding(requestId, i, v)
+                        }
+                        dim
+                    }
+                    callback.onComplete(requestId, Bundle().apply {
+                        putString(Key.MODEL, spec.id)
+                        putInt(Key.COUNT, images.size)
+                        putInt(Key.DIMENSION, dim)
+                        putLong(Key.DURATION_MS, System.currentTimeMillis() - started)
+                    })
+                } catch (e: Throwable) {
+                    if (e !is CancellationException && e !is RemoteException) Log.w(TAG, "Image embedding $requestId failed", e)
+                    runCatching { callback.onError(requestId, codeOf(e), e.message ?: e.javaClass.simpleName) }
+                    if (e is CancellationException) throw e
+                } finally {
+                    images.forEach { it.close() }
+                }
+            }
+            return Bundle().apply { putString(Key.REQUEST_ID, requestId) }
+        }
+
+        override fun detectFaces(request: Bundle?, callback: IResultCallback?): Bundle {
+            val auth = authorize()
+            if (auth is Auth.Rejected) return error(auth.code, auth.message)
+            val caller = (auth as Auth.Ok).caller
+            if (request == null || callback == null) return error(Error.INVALID_REQUEST, "Missing request or callback")
+            val spec = resolveModel(request.getString(Key.MODEL), ModelType.FACE)
+                ?: return error(Error.MODEL_NOT_INSTALLED, "Model is not installed: ${request.getString(Key.MODEL) ?: "no face model"}")
+            if (spec.type != ModelType.FACE) return error(Error.INVALID_REQUEST, "${spec.name} is not a face model")
+            val images = try {
+                ImageSource.listFrom(request)
+            } catch (e: Exception) {
+                return error(Error.INVALID_REQUEST, e.message ?: "Invalid images")
+            }
+            if (images.isEmpty()) return error(Error.INVALID_REQUEST, "No images given")
+            if (images.size > MAX_BATCH) return error(Error.INVALID_REQUEST, "At most $MAX_BATCH images per request")
+            val config = spec.configJson()
+            val threshold = request.getFloat(Key.THRESHOLD, config?.optDouble("threshold", 0.55)?.toFloat() ?: 0.55f)
+            val minSize = request.getFloat(Key.MIN_FACE_SIZE, config?.optDouble("min_face_size", 20.0)?.toFloat() ?: 20f)
+            val withEmbeddings = request.getBoolean(Key.WITH_EMBEDDINGS, true)
+            val maxDim = request.getInt(Key.MAX_DIMENSION, 0).takeIf { it > 0 } ?: 1600
+            val requestId = g.runtime.newRequestId()
+
+            g.runtime.submit(requestId, caller.uid) {
+                val started = System.currentTimeMillis()
+                try {
+                    g.runtime.withOnnx(requestId, spec, caller.label, "detect faces") { model ->
+                        val analyzer = FaceAnalyzer(model)
+                        images.forEachIndexed { i, image ->
+                            if (g.runtime.isCancelled(requestId)) throw CancellationException("Cancelled")
+                            val bitmap = image.decode(maxDim)
+                            val w = bitmap.width.toFloat()
+                            val h = bitmap.height.toFloat()
+                            val faces = analyzer.detect(bitmap, threshold, minSize).map { f ->
+                                Bundle().apply {
+                                    putFloatArray(Key.BOX, floatArrayOf(f.box.left, f.box.top, f.box.right, f.box.bottom))
+                                    putFloatArray(
+                                        Key.BOX_NORMALIZED,
+                                        floatArrayOf(f.box.left / w, f.box.top / h, f.box.right / w, f.box.bottom / h),
+                                    )
+                                    putFloatArray(Key.LANDMARKS, f.landmarks)
+                                    putFloat(Key.SCORE, f.score)
+                                    if (withEmbeddings) putFloatArray(Key.EMBEDDING, analyzer.embed(bitmap, f.landmarks))
+                                }
+                            }
+                            callback.onResult(requestId, i, Bundle().apply {
+                                putInt(Key.WIDTH, bitmap.width)
+                                putInt(Key.HEIGHT, bitmap.height)
+                                putParcelableArrayList(Key.FACES, ArrayList(faces))
+                            })
+                        }
+                    }
+                    callback.onComplete(requestId, Bundle().apply {
+                        putString(Key.MODEL, spec.id)
+                        putInt(Key.COUNT, images.size)
+                        putLong(Key.DURATION_MS, System.currentTimeMillis() - started)
+                    })
+                } catch (e: Throwable) {
+                    if (e !is CancellationException && e !is RemoteException) Log.w(TAG, "Face detection $requestId failed", e)
+                    runCatching { callback.onError(requestId, codeOf(e), e.message ?: e.javaClass.simpleName) }
+                    if (e is CancellationException) throw e
+                } finally {
+                    images.forEach { it.close() }
+                }
+            }
+            return Bundle().apply { putString(Key.REQUEST_ID, requestId) }
+        }
+
+        override fun runModel(request: Bundle?, callback: IResultCallback?): Bundle {
+            val auth = authorize()
+            if (auth is Auth.Rejected) return error(auth.code, auth.message)
+            val caller = (auth as Auth.Ok).caller
+            if (request == null || callback == null) return error(Error.INVALID_REQUEST, "Missing request or callback")
+            val spec = request.getString(Key.MODEL)?.let { g.store.get(it) }
+                ?: return error(Error.MODEL_NOT_INSTALLED, "Model is not installed: ${request.getString(Key.MODEL)}")
+            if (spec.engine != AICoreContract.Engine.ONNX) return error(Error.INVALID_REQUEST, "${spec.name} is not an ONNX model")
+            val component = request.getString(Key.COMPONENT)
+                ?: spec.files.firstOrNull { it.localName.endsWith(".onnx") }?.role
+                ?: return error(Error.INVALID_REQUEST, "No component given")
+            if (spec.files.none { it.role == component }) return error(Error.INVALID_REQUEST, "${spec.name} has no component '$component'")
+            @Suppress("DEPRECATION")
+            val inputs = try {
+                request.getParcelableArrayList<Bundle>(Key.INPUTS).orEmpty().map { Tensor.fromBundle(it) }
+            } catch (e: Exception) {
+                return error(Error.INVALID_REQUEST, "Invalid input tensors: ${e.message}")
+            }
+            val outputs = request.getStringArray(Key.OUTPUTS)?.toSet()
+            val requestId = g.runtime.newRequestId()
+
+            g.runtime.submit(requestId, caller.uid) {
+                val started = System.currentTimeMillis()
+                try {
+                    val results = g.runtime.withOnnx(requestId, spec, caller.label, "run $component") { model ->
+                        val onnxInputs = inputs.associate { it.name to Tensors.toOnnx(model.env, it) }
+                        try {
+                            model.run(component, onnxInputs, outputs).use { result ->
+                                result.map { (name, value) ->
+                                    val tensor = value as? OnnxTensor ?: throw IllegalArgumentException("Output $name is not a tensor")
+                                    Tensors.fromOnnx(name, tensor).toBundle()
+                                }
+                            }
+                        } finally {
+                            onnxInputs.values.forEach { it.close() }
+                        }
+                    }
+                    callback.onResult(requestId, 0, Bundle().apply { putParcelableArrayList(Key.OUTPUTS, ArrayList(results)) })
+                    callback.onComplete(requestId, Bundle().apply {
+                        putString(Key.MODEL, spec.id)
+                        putLong(Key.DURATION_MS, System.currentTimeMillis() - started)
+                    })
+                } catch (e: Throwable) {
+                    if (e !is CancellationException && e !is RemoteException) Log.w(TAG, "Run $requestId failed", e)
+                    runCatching { callback.onError(requestId, codeOf(e), e.message ?: e.javaClass.simpleName) }
+                    if (e is CancellationException) throw e
+                }
+            }
+            return Bundle().apply { putString(Key.REQUEST_ID, requestId) }
+        }
+
+        override fun getCapabilities(): Bundle {
+            val auth = authorize()
+            if (auth is Auth.Rejected) return error(auth.code, auth.message)
+            return Bundle().apply {
+                putInt(Key.API_VERSION, AICoreContract.API_VERSION)
+                putString(Key.SERVICE_VERSION, BuildConfig.VERSION_NAME)
+                putStringArray(
+                    Key.TASKS,
+                    arrayOf(
+                        Task.CHAT, Task.COMPLETION, Task.JSON_MODE, Task.GRAMMAR, Task.TEXT_EMBEDDING, Task.IMAGE_EMBEDDING,
+                        Task.MULTIMODAL_TEXT_EMBEDDING, Task.FACE_DETECTION, Task.FACE_EMBEDDING, Task.ONNX_INFERENCE, Task.TOKENIZE,
+                    ),
+                )
+                putStringArray(Key.ENGINES, arrayOf("llama.cpp b11852", "onnxruntime 1.30.0"))
+                putStringArray(Key.MODEL_TYPES, ModelType.ALL.toTypedArray())
+                putInt(Key.MAX_BATCH, MAX_BATCH)
+            }
+        }
+
+        override fun getCatalog(): Bundle {
+            val auth = authorize()
+            if (auth is Auth.Rejected) return error(auth.code, auth.message)
+            val downloading = g.downloads.downloads.value.keys
+            return Bundle().apply {
+                putParcelableArrayList(Key.MODELS, ArrayList(g.catalog.entries.value.map { e ->
+                    Bundle().apply {
+                        putString(Key.ID, e.id)
+                        putString(Key.NAME, e.name)
+                        putString(Key.TYPE, e.type)
+                        putString(Key.ENGINE, e.engine)
+                        putString(Key.DESCRIPTION, e.description)
+                        putLong(Key.SIZE_BYTES, e.sizeBytes)
+                        putStringArray(Key.LANGUAGES, e.languages.toTypedArray())
+                        putBoolean(Key.INSTALLED, g.store.get(e.id) != null)
+                        putBoolean(Key.DOWNLOADING, e.id in downloading)
+                        e.config?.let { putString(Key.CONFIG, it) }
+                    }
+                }))
+            }
+        }
+
+        override fun tokenize(request: Bundle?): Bundle {
+            val auth = authorize()
+            if (auth is Auth.Rejected) return error(auth.code, auth.message)
+            val caller = (auth as Auth.Ok).caller
+            request ?: return error(Error.INVALID_REQUEST, "Missing request")
+            val text = request.getString(Key.TEXT) ?: return error(Error.INVALID_REQUEST, "Missing text")
+            val spec = resolveModel(request.getString(Key.MODEL), request.getString(Key.TYPE) ?: ModelType.CHAT)
+                ?: return error(Error.MODEL_NOT_INSTALLED, "Model is not installed")
+            return try {
+                val ids = kotlinx.coroutines.runBlocking {
+                    when {
+                        spec.type == ModelType.IMAGE_TEXT -> g.runtime.withOnnx(g.runtime.newRequestId(), spec, caller.label, "tokenize") { model ->
+                            ImageTextEncoder(model, ImageTextConfig.from(spec.configJson())).tokenize(text)
+                        }
+                        spec.engine == AICoreContract.Engine.LLAMA -> g.runtime.withModel(g.runtime.newRequestId(), spec, caller.label, "tokenize") { model ->
+                            model.tokenize(text).map { it.toLong() }.toLongArray()
+                        }
+                        else -> throw IllegalArgumentException("${spec.name} has no tokenizer")
+                    }
+                }
+                Bundle().apply {
+                    putLongArray(Key.TOKEN_IDS, ids)
+                    putInt(Key.TOKEN_COUNT, ids.size)
+                }
+            } catch (e: Exception) {
+                error(codeOf(e), e.message ?: e.javaClass.simpleName)
+            }
+        }
     }
 
     companion object {
         private const val TAG = "AICoreService"
         private const val MAX_EMBED_TEXTS = 4096
+        private const val MAX_BATCH = 256
     }
 }

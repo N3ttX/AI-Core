@@ -33,3 +33,8 @@ android {
         }
     }
 }
+
+dependencies {
+    // ONNX Runtime (MIT, from Maven Central) for image, face and generic ONNX models.
+    api(libs.onnxruntime.android)
+}

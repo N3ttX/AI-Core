@@ -43,57 +43,75 @@ fun SettingsScreen() {
         Text("Settings", style = MaterialTheme.typography.headlineSmall)
         Hint("Changes apply the next time a model is loaded.")
 
-        SectionTitle("Performance")
-        SliderSetting("Context length", "${s.contextLength} tokens", s.contextLength.toFloat(), 1024f..32768f, 30) {
-            g.settings.update { st -> st.copy(contextLength = (it / 1024).roundToInt().coerceAtLeast(1) * 1024) }
-        }
-        SliderSetting("CPU threads", "${s.threads} of $cores", s.threads.toFloat(), 1f..cores.toFloat(), cores - 2) {
-            g.settings.update { st -> st.copy(threads = it.roundToInt()) }
-        }
-
-        SectionTitle("Memory")
-        SliderSetting("Memory budget for models", "${s.memoryBudgetMb / 1024.0} GB", s.memoryBudgetMb.toFloat(), 2048f..14336f, 23) {
-            g.settings.update { st -> st.copy(memoryBudgetMb = ((it / 512).roundToInt() * 512)) }
-        }
-        SliderSetting(
-            "Unload idle models after",
-            if (s.idleUnloadMinutes == 0) "never" else "${s.idleUnloadMinutes} min",
-            s.idleUnloadMinutes.toFloat(), 0f..60f, 11,
-        ) {
-            g.settings.update { st -> st.copy(idleUnloadMinutes = (it / 5).roundToInt() * 5) }
-        }
-        OutlinedButton(onClick = { g.scope.launch { g.runtime.unloadAll() } }) { Text("Unload all models now") }
-
-        SectionTitle("Output")
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Hide reasoning")
-                Hint("Removes <think>…</think> blocks of reasoning models from the output.")
+        SectionCard("Performance") {
+            SliderSetting("Context length", "${s.contextLength} tokens", s.contextLength.toFloat(), 1024f..32768f, 30) {
+                g.settings.update { st -> st.copy(contextLength = (it / 1024).roundToInt().coerceAtLeast(1) * 1024) }
             }
-            Switch(checked = s.hideThinking, onCheckedChange = { v -> g.settings.update { it.copy(hideThinking = v) } })
+            RowDivider()
+            SliderSetting("CPU threads", "${s.threads} of $cores", s.threads.toFloat(), 1f..cores.toFloat(), cores - 2) {
+                g.settings.update { st -> st.copy(threads = it.roundToInt()) }
+            }
+            RowDivider()
+            SwitchSetting(
+                "XNNPACK for ONNX models",
+                "Faster image and face models on some devices. Turn off if a model fails to load.",
+                s.useXnnpack,
+            ) { v -> g.settings.update { it.copy(useXnnpack = v) } }
         }
 
-        SectionTitle("Catalog")
-        OutlinedTextField(
-            value = catalogUrl,
-            onValueChange = { catalogUrl = it },
-            label = { Text("Catalog URL") },
-            modifier = Modifier.fillMaxWidth(),
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { g.settings.update { it.copy(catalogUrl = catalogUrl.trim()) } }) { Text("Save") }
-            OutlinedButton(onClick = {
-                catalogUrl = com.n3ttx.aicore.data.CoreSettings.DEFAULT_CATALOG_URL
-                g.settings.update { it.copy(catalogUrl = catalogUrl) }
-            }) { Text("Reset") }
+        SectionCard("Memory") {
+            SliderSetting("Memory budget for models", "${s.memoryBudgetMb / 1024.0} GB", s.memoryBudgetMb.toFloat(), 2048f..14336f, 23) {
+                g.settings.update { st -> st.copy(memoryBudgetMb = ((it / 512).roundToInt() * 512)) }
+            }
+            RowDivider()
+            SliderSetting(
+                "Unload idle models after",
+                if (s.idleUnloadMinutes == 0) "never" else "${s.idleUnloadMinutes} min",
+                s.idleUnloadMinutes.toFloat(), 0f..60f, 11,
+            ) {
+                g.settings.update { st -> st.copy(idleUnloadMinutes = (it / 5).roundToInt() * 5) }
+            }
+            RowDivider()
+            OutlinedButton(onClick = { g.scope.launch { g.runtime.unloadAll() } }, modifier = Modifier.padding(16.dp)) {
+                Text("Unload all models now")
+            }
         }
 
-        SectionTitle("Privacy")
-        Hint(
-            "AI Core Hub has no analytics, no ads and no Google Play Services. It only connects to the internet " +
-                "to download models and the catalog. Prompts and results never leave this device.",
-        )
-        Hint("Version ${BuildConfig.VERSION_NAME}", Modifier.padding(top = 16.dp))
+        SectionCard("Output") {
+            SwitchSetting("Hide reasoning", "Removes <think>…</think> blocks of reasoning models from the output.", s.hideThinking) { v ->
+                g.settings.update { it.copy(hideThinking = v) }
+            }
+        }
+
+        SectionCard("Catalog") {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = catalogUrl,
+                    onValueChange = { catalogUrl = it },
+                    label = { Text("Catalog URL") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { g.settings.update { it.copy(catalogUrl = catalogUrl.trim()) } }) { Text("Save") }
+                    OutlinedButton(onClick = {
+                        catalogUrl = com.n3ttx.aicore.data.CoreSettings.DEFAULT_CATALOG_URL
+                        g.settings.update { it.copy(catalogUrl = catalogUrl) }
+                    }) { Text("Reset") }
+                }
+            }
+        }
+
+        SectionCard("About") {
+            Hint(
+                "AI Core Hub has no analytics, no ads and no Google Play Services. It only connects to the internet " +
+                    "to download models and the catalog. Prompts, photos and results never leave this device.",
+                Modifier.padding(16.dp),
+            )
+            RowDivider()
+            InfoRow("Version", BuildConfig.VERSION_NAME)
+            RowDivider()
+            InfoRow("Engines", "llama.cpp · ONNX Runtime")
+        }
     }
 }
 
@@ -107,7 +125,7 @@ private fun SliderSetting(
     onChange: (Float) -> Unit,
 ) {
     var pos by remember(current) { mutableStateOf(current) }
-    Column {
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
         Row {
             Text(title, Modifier.weight(1f))
             Text(value, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
@@ -119,5 +137,16 @@ private fun SliderSetting(
             valueRange = range,
             steps = steps.coerceAtLeast(0),
         )
+    }
+}
+
+@Composable
+private fun SwitchSetting(title: String, description: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(title)
+            Hint(description)
+        }
+        Switch(checked = checked, onCheckedChange = onChange)
     }
 }

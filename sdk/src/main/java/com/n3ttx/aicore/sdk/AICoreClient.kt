@@ -145,7 +145,8 @@ class AICoreClient(context: Context) : Closeable {
         b.throwIfError()
         @Suppress("DEPRECATION")
         val models = b.getParcelableArrayList<Bundle>(Key.MODELS).orEmpty().map(ModelInfo::fromBundle)
-        ModelList(models, b.getString(Key.DEFAULT_CHAT_MODEL), b.getString(Key.DEFAULT_EMBEDDING_MODEL))
+        val defaults = b.getBundle(Key.DEFAULTS)?.let { d -> d.keySet().associateWith { d.getString(it).orEmpty() } }.orEmpty()
+        ModelList(models, b.getString(Key.DEFAULT_CHAT_MODEL), b.getString(Key.DEFAULT_EMBEDDING_MODEL), defaults)
     }
 
     /**
@@ -160,8 +161,11 @@ class AICoreClient(context: Context) : Closeable {
         type: String = AICoreContract.ModelType.CHAT,
         sha256: String? = null,
         reason: String? = null,
+        /** A full model package as JSON in the catalog.json format, for multi-file ONNX models. */
+        packageJson: String? = null,
     ): String {
         val spec = Bundle().apply {
+            packageJson?.let { putString(Key.PACKAGE, it) }
             id?.let { putString(Key.ID, it) }
             url?.let { putString(Key.URL, it) }
             name?.let { putString(Key.NAME, it) }
@@ -222,16 +226,45 @@ class AICoreClient(context: Context) : Closeable {
         return result ?: throw AICoreException(Error.INTERNAL, "Generation ended without a result")
     }
 
-    /** Embeds [texts] with the given model (null = default embedding model). */
-    suspend fun embed(texts: List<String>, model: String? = null, normalize: Boolean = true): EmbeddingResult =
+    /**
+     * Embeds [texts]. With an image-text model (CLIP, SigLIP) the vectors live in the same space as
+     * [embedImages], for text-to-image search. [model] null uses the default model of [type].
+     */
+    suspend fun embed(
+        texts: List<String>,
+        model: String? = null,
+        normalize: Boolean = true,
+        type: String = AICoreContract.ModelType.EMBEDDING,
+    ): EmbeddingResult {
+        val request = Bundle().apply {
+            putStringArray(Key.TEXTS, texts.toTypedArray())
+            putBoolean(Key.NORMALIZE, normalize)
+            putString(Key.TYPE, type)
+            model?.let { putString(Key.MODEL, it) }
+        }
+        return collectEmbeddings(texts.size) { s, cb -> s.embed(request, cb) }
+    }
+
+    /**
+     * Embeds images with an image-text model (null = default one). Vectors are L2-normalized and
+     * comparable with text vectors from [embed] with the same model.
+     */
+    suspend fun embedImages(images: List<ImageInput>, model: String? = null, maxDimension: Int = 0): EmbeddingResult {
+        val request = Bundle().apply {
+            putParcelableArrayList(Key.IMAGES, ArrayList(images.map { it.toBundle() }))
+            model?.let { putString(Key.MODEL, it) }
+            if (maxDimension > 0) putInt(Key.MAX_DIMENSION, maxDimension)
+        }
+        return collectEmbeddings(images.size) { s, cb -> s.embedImages(request, cb) }
+    }
+
+    private suspend fun collectEmbeddings(
+        count: Int,
+        start: (IAICoreService, IEmbeddingCallback) -> Bundle,
+    ): EmbeddingResult =
         withContext(Dispatchers.IO) {
             val s = awaitService()
-            val vectors = arrayOfNulls<FloatArray>(texts.size)
-            val request = Bundle().apply {
-                putStringArray(Key.TEXTS, texts.toTypedArray())
-                putBoolean(Key.NORMALIZE, normalize)
-                model?.let { putString(Key.MODEL, it) }
-            }
+            val vectors = arrayOfNulls<FloatArray>(count)
             suspendCancellableCoroutine { cont ->
                 val death = IBinder.DeathRecipient {
                     if (cont.isActive) cont.resumeWithException(AICoreException(Error.SERVICE_UNAVAILABLE, "AI Core Hub stopped"))
@@ -261,7 +294,7 @@ class AICoreClient(context: Context) : Closeable {
                 }
                 try {
                     s.asBinder().linkToDeath(death, 0)
-                    val response = s.embed(request, callback)
+                    val response = start(s, callback)
                     val error = response.errorOrNull()
                     if (error != null) {
                         unlink()
@@ -278,6 +311,144 @@ class AICoreClient(context: Context) : Closeable {
                 }
             }
         }
+
+    /**
+     * Detects faces in each image with a face model (null = default one). Results come in the
+     * order of [images]. Embeddings are L2-normalized; same person ≈ cosine similarity above the
+     * model's "assign_threshold" (see [ModelInfo.config]).
+     */
+    suspend fun detectFaces(
+        images: List<ImageInput>,
+        model: String? = null,
+        threshold: Float = 0.55f,
+        minFaceSize: Float = 20f,
+        withEmbeddings: Boolean = true,
+        maxDimension: Int = 0,
+    ): List<FaceResult> {
+        val request = Bundle().apply {
+            putParcelableArrayList(Key.IMAGES, ArrayList(images.map { it.toBundle() }))
+            model?.let { putString(Key.MODEL, it) }
+            putFloat(Key.THRESHOLD, threshold)
+            putFloat(Key.MIN_FACE_SIZE, minFaceSize)
+            putBoolean(Key.WITH_EMBEDDINGS, withEmbeddings)
+            if (maxDimension > 0) putInt(Key.MAX_DIMENSION, maxDimension)
+        }
+        return collectResults(images.size) { s, cb -> s.detectFaces(request, cb) }.map { FaceResult.fromBundle(it) }
+    }
+
+    /**
+     * Runs one [component] (e.g. "vision", "text", "model") of an installed ONNX model with raw
+     * tensors. [outputs] null returns all outputs. Use this for models AI Core has no task for.
+     */
+    suspend fun runModel(model: String, component: String, inputs: List<Tensor>, outputs: List<String>? = null): List<Tensor> {
+        val request = Bundle().apply {
+            putString(Key.MODEL, model)
+            putString(Key.COMPONENT, component)
+            putParcelableArrayList(Key.INPUTS, ArrayList(inputs.map { it.toBundle() }))
+            outputs?.let { putStringArray(Key.OUTPUTS, it.toTypedArray()) }
+        }
+        val result = collectResults(1) { s, cb -> s.runModel(request, cb) }.firstOrNull()
+            ?: throw AICoreException(Error.INTERNAL, "No result")
+        @Suppress("DEPRECATION")
+        return result.getParcelableArrayList<Bundle>(Key.OUTPUTS).orEmpty().map { Tensor.fromBundle(it) }
+    }
+
+    private suspend fun collectResults(count: Int, start: (IAICoreService, IResultCallback) -> Bundle): List<Bundle> =
+        withContext(Dispatchers.IO) {
+            val s = awaitService()
+            val results = arrayOfNulls<Bundle>(count)
+            suspendCancellableCoroutine { cont ->
+                val death = IBinder.DeathRecipient {
+                    if (cont.isActive) cont.resumeWithException(AICoreException(Error.SERVICE_UNAVAILABLE, "AI Core Hub stopped"))
+                }
+                val unlink = { runCatching { s.asBinder().unlinkToDeath(death, 0) } }
+                val callback = object : IResultCallback.Stub() {
+                    override fun onResult(requestId: String, index: Int, result: Bundle) {
+                        if (index in results.indices) results[index] = result
+                    }
+
+                    override fun onComplete(requestId: String, result: Bundle) {
+                        unlink()
+                        if (cont.isActive) cont.resume(results.map { it ?: Bundle() })
+                    }
+
+                    override fun onError(requestId: String, code: Int, message: String?) {
+                        unlink()
+                        if (cont.isActive) cont.resumeWithException(AICoreException(code, message))
+                    }
+                }
+                try {
+                    s.asBinder().linkToDeath(death, 0)
+                    val response = start(s, callback)
+                    val error = response.errorOrNull()
+                    if (error != null) {
+                        unlink()
+                        cont.resumeWithException(error)
+                    } else {
+                        val requestId = response.getString(Key.REQUEST_ID)
+                        cont.invokeOnCancellation {
+                            unlink()
+                            if (requestId != null) runCatching { s.cancel(requestId) }
+                        }
+                    }
+                } catch (e: RemoteException) {
+                    unlink()
+                    if (cont.isActive) cont.resumeWithException(AICoreException(Error.SERVICE_UNAVAILABLE, e.message))
+                }
+            }
+        }
+
+    /** What this AI Core installation supports. Check [Capabilities.apiVersion] before using newer calls. */
+    suspend fun capabilities(): Capabilities {
+        val version = call { it.apiVersion }
+        if (version < 2) {
+            return Capabilities(version, "", listOf(AICoreContract.Task.CHAT, AICoreContract.Task.TEXT_EMBEDDING), listOf("llama"), listOf("chat", "embedding"), 0)
+        }
+        val b = call { it.capabilities }
+        b.throwIfError()
+        return Capabilities(
+            apiVersion = b.getInt(Key.API_VERSION),
+            serviceVersion = b.getString(Key.SERVICE_VERSION).orEmpty(),
+            tasks = b.getStringArray(Key.TASKS)?.toList().orEmpty(),
+            engines = b.getStringArray(Key.ENGINES)?.toList().orEmpty(),
+            modelTypes = b.getStringArray(Key.MODEL_TYPES)?.toList().orEmpty(),
+            maxBatch = b.getInt(Key.MAX_BATCH),
+        )
+    }
+
+    /** Models AI Core can install, so an app can offer them and call [requestModel] with the id. */
+    suspend fun catalog(): List<CatalogModel> {
+        val b = call { it.catalog }
+        b.throwIfError()
+        @Suppress("DEPRECATION")
+        return b.getParcelableArrayList<Bundle>(Key.MODELS).orEmpty().map {
+            CatalogModel(
+                id = it.getString(Key.ID).orEmpty(),
+                name = it.getString(Key.NAME).orEmpty(),
+                type = it.getString(Key.TYPE).orEmpty(),
+                engine = it.getString(Key.ENGINE).orEmpty(),
+                description = it.getString(Key.DESCRIPTION).orEmpty(),
+                sizeBytes = it.getLong(Key.SIZE_BYTES),
+                languages = it.getStringArray(Key.LANGUAGES)?.toList().orEmpty(),
+                installed = it.getBoolean(Key.INSTALLED),
+                downloading = it.getBoolean(Key.DOWNLOADING),
+                config = it.getString(Key.CONFIG),
+            )
+        }
+    }
+
+    /** Token ids of [text] with the tokenizer of [model] (padded to the model's length for image-text models). */
+    suspend fun tokenize(text: String, model: String? = null, type: String = AICoreContract.ModelType.CHAT): LongArray {
+        val b = call {
+            it.tokenize(Bundle().apply {
+                putString(Key.TEXT, text)
+                putString(Key.TYPE, type)
+                model?.let { m -> putString(Key.MODEL, m) }
+            })
+        }
+        b.throwIfError()
+        return b.getLongArray(Key.TOKEN_IDS) ?: LongArray(0)
+    }
 
     /** Counts the tokens [request] would use as prompt, including the chat template. */
     suspend fun countTokens(request: GenerationRequest): Int {

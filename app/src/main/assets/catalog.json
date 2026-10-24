@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "models": [
     {
       "id": "qwen3.5-4b-q4km",
@@ -9,10 +9,13 @@
       "url": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf",
       "size_bytes": 2740000000,
       "license": "Apache-2.0",
-      "languages": ["multilingual"],
+      "languages": [
+        "multilingual"
+      ],
       "context_length": 262144,
       "recommended": true,
-      "assistant_prefix": "<think>\n\n</think>\n\n"
+      "assistant_prefix": "<think>\n\n</think>\n\n",
+      "engine": "llama"
     },
     {
       "id": "gemma-4-e4b-q4km",
@@ -22,9 +25,12 @@
       "url": "https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf",
       "size_bytes": 4980000000,
       "license": "Gemma",
-      "languages": ["multilingual"],
+      "languages": [
+        "multilingual"
+      ],
       "context_length": 131072,
-      "recommended": true
+      "recommended": true,
+      "engine": "llama"
     },
     {
       "id": "gemma-4-e2b-q4km",
@@ -34,9 +40,12 @@
       "url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf",
       "size_bytes": 3110000000,
       "license": "Gemma",
-      "languages": ["multilingual"],
+      "languages": [
+        "multilingual"
+      ],
       "context_length": 131072,
-      "recommended": false
+      "recommended": false,
+      "engine": "llama"
     },
     {
       "id": "qwen3.5-0.8b-q8",
@@ -46,10 +55,13 @@
       "url": "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q8_0.gguf",
       "size_bytes": 812000000,
       "license": "Apache-2.0",
-      "languages": ["multilingual"],
+      "languages": [
+        "multilingual"
+      ],
       "context_length": 262144,
       "recommended": true,
-      "assistant_prefix": "<think>\n\n</think>\n\n"
+      "assistant_prefix": "<think>\n\n</think>\n\n",
+      "engine": "llama"
     },
     {
       "id": "llama-3.2-3b-q4km",
@@ -59,9 +71,19 @@
       "url": "https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
       "size_bytes": 2020000000,
       "license": "Llama 3.2 Community",
-      "languages": ["en", "de", "fr", "it", "pt", "hi", "es", "th"],
+      "languages": [
+        "en",
+        "de",
+        "fr",
+        "it",
+        "pt",
+        "hi",
+        "es",
+        "th"
+      ],
       "context_length": 131072,
-      "recommended": false
+      "recommended": false,
+      "engine": "llama"
     },
     {
       "id": "phi-4-mini-q4km",
@@ -71,9 +93,12 @@
       "url": "https://huggingface.co/unsloth/Phi-4-mini-instruct-GGUF/resolve/main/Phi-4-mini-instruct-Q4_K_M.gguf",
       "size_bytes": 2490000000,
       "license": "MIT",
-      "languages": ["en"],
+      "languages": [
+        "en"
+      ],
       "context_length": 131072,
-      "recommended": false
+      "recommended": false,
+      "engine": "llama"
     },
     {
       "id": "qwen3-embedding-0.6b-q8",
@@ -83,10 +108,13 @@
       "url": "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf",
       "size_bytes": 639000000,
       "license": "Apache-2.0",
-      "languages": ["multilingual"],
+      "languages": [
+        "multilingual"
+      ],
       "context_length": 32768,
       "recommended": true,
-      "query_prefix": "Instruct: Given a search query, retrieve relevant passages that answer the query\nQuery: "
+      "query_prefix": "Instruct: Given a search query, retrieve relevant passages that answer the query\nQuery: ",
+      "engine": "llama"
     },
     {
       "id": "embeddinggemma-300m-q8",
@@ -96,11 +124,14 @@
       "url": "https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf",
       "size_bytes": 330000000,
       "license": "Gemma",
-      "languages": ["multilingual"],
+      "languages": [
+        "multilingual"
+      ],
       "context_length": 2048,
       "recommended": false,
       "query_prefix": "task: search result | query: ",
-      "document_prefix": "title: none | text: "
+      "document_prefix": "title: none | text: ",
+      "engine": "llama"
     },
     {
       "id": "nomic-embed-text-v2-moe-q8",
@@ -110,11 +141,412 @@
       "url": "https://huggingface.co/ggml-org/Nomic-Embed-Text-V2-GGUF/resolve/main/nomic-embed-text-v2-moe-q8_0.gguf",
       "size_bytes": 510000000,
       "license": "Apache-2.0",
-      "languages": ["multilingual"],
+      "languages": [
+        "multilingual"
+      ],
       "context_length": 512,
       "recommended": false,
       "query_prefix": "search_query: ",
-      "document_prefix": "search_document: "
+      "document_prefix": "search_document: ",
+      "engine": "llama"
+    },
+    {
+      "id": "mobileclip-s0",
+      "name": "MobileCLIP S0",
+      "type": "image_text",
+      "engine": "onnx",
+      "description": "Tiny, very fast image search. English search terms only.",
+      "repo": "Xenova/mobileclip_s0",
+      "files": [
+        {
+          "role": "vision",
+          "path": "onnx/vision_model.onnx",
+          "size": 45543630
+        },
+        {
+          "role": "text",
+          "path": "onnx/text_model_quantized.onnx",
+          "size": 42799238
+        },
+        {
+          "role": "tokenizer",
+          "path": "tokenizer.json",
+          "size": 2224081
+        }
+      ],
+      "license": "Apache-2.0",
+      "languages": [
+        "en"
+      ],
+      "recommended": false,
+      "config": {
+        "image_size": 256,
+        "resize": "center_crop",
+        "mean": [
+          0,
+          0,
+          0
+        ],
+        "std": [
+          1,
+          1,
+          1
+        ],
+        "max_text_length": 77,
+        "pad_id": 0,
+        "lowercase": true,
+        "embedding_dim": 512
+      },
+      "context_length": 0
+    },
+    {
+      "id": "siglip2-b32-256",
+      "name": "SigLIP 2 Base/32",
+      "type": "image_text",
+      "engine": "onnx",
+      "description": "Fast image search that understands 100+ languages.",
+      "repo": "onnx-community/siglip2-base-patch32-256-ONNX",
+      "files": [
+        {
+          "role": "vision",
+          "path": "onnx/vision_model_fp16.onnx",
+          "size": 189374263
+        },
+        {
+          "role": "text",
+          "path": "onnx/text_model_q4f16.onnx",
+          "size": 442779433
+        },
+        {
+          "role": "tokenizer",
+          "path": "tokenizer.json",
+          "size": 34363039
+        }
+      ],
+      "license": "Apache-2.0",
+      "languages": [
+        "multilingual"
+      ],
+      "recommended": false,
+      "config": {
+        "image_size": 256,
+        "resize": "squash",
+        "mean": [
+          0.5,
+          0.5,
+          0.5
+        ],
+        "std": [
+          0.5,
+          0.5,
+          0.5
+        ],
+        "max_text_length": 64,
+        "pad_id": 0,
+        "lowercase": true,
+        "embedding_dim": 768
+      },
+      "context_length": 0
+    },
+    {
+      "id": "siglip2-b16-256",
+      "name": "SigLIP 2 Base/16",
+      "type": "image_text",
+      "engine": "onnx",
+      "description": "Best balance of speed and accuracy for image search. Multilingual.",
+      "repo": "onnx-community/siglip2-base-patch16-256-ONNX",
+      "files": [
+        {
+          "role": "vision",
+          "path": "onnx/vision_model_fp16.onnx",
+          "size": 186131676
+        },
+        {
+          "role": "text",
+          "path": "onnx/text_model_q4f16.onnx",
+          "size": 442779433
+        },
+        {
+          "role": "tokenizer",
+          "path": "tokenizer.json",
+          "size": 34363039
+        }
+      ],
+      "license": "Apache-2.0",
+      "languages": [
+        "multilingual"
+      ],
+      "recommended": true,
+      "config": {
+        "image_size": 256,
+        "resize": "squash",
+        "mean": [
+          0.5,
+          0.5,
+          0.5
+        ],
+        "std": [
+          0.5,
+          0.5,
+          0.5
+        ],
+        "max_text_length": 64,
+        "pad_id": 0,
+        "lowercase": true,
+        "embedding_dim": 768
+      },
+      "context_length": 0
+    },
+    {
+      "id": "siglip2-l16-384",
+      "name": "SigLIP 2 Large/16 @384",
+      "type": "image_text",
+      "engine": "onnx",
+      "description": "High resolution: finds small details and text in photos. Multilingual.",
+      "repo": "onnx-community/siglip2-large-patch16-384-ONNX",
+      "files": [
+        {
+          "role": "vision",
+          "path": "onnx/vision_model_fp16.onnx",
+          "size": 633088421
+        },
+        {
+          "role": "text",
+          "path": "onnx/text_model_q4f16.onnx",
+          "size": 697558347
+        },
+        {
+          "role": "tokenizer",
+          "path": "tokenizer.json",
+          "size": 34363039
+        }
+      ],
+      "license": "Apache-2.0",
+      "languages": [
+        "multilingual"
+      ],
+      "recommended": false,
+      "config": {
+        "image_size": 384,
+        "resize": "squash",
+        "mean": [
+          0.5,
+          0.5,
+          0.5
+        ],
+        "std": [
+          0.5,
+          0.5,
+          0.5
+        ],
+        "max_text_length": 64,
+        "pad_id": 0,
+        "lowercase": true,
+        "embedding_dim": 1024
+      },
+      "context_length": 0
+    },
+    {
+      "id": "siglip2-so400m-384",
+      "name": "SigLIP 2 So400m/14 @384",
+      "type": "image_text",
+      "engine": "onnx",
+      "description": "Very accurate image search, slow to index. Multilingual.",
+      "repo": "onnx-community/siglip2-so400m-patch14-384-ONNX",
+      "files": [
+        {
+          "role": "vision",
+          "path": "onnx/vision_model_fp16.onnx",
+          "size": 857034174
+        },
+        {
+          "role": "text",
+          "path": "onnx/text_model_q4f16.onnx",
+          "size": 825525093
+        },
+        {
+          "role": "tokenizer",
+          "path": "tokenizer.json",
+          "size": 34363039
+        }
+      ],
+      "license": "Apache-2.0",
+      "languages": [
+        "multilingual"
+      ],
+      "recommended": false,
+      "config": {
+        "image_size": 384,
+        "resize": "squash",
+        "mean": [
+          0.5,
+          0.5,
+          0.5
+        ],
+        "std": [
+          0.5,
+          0.5,
+          0.5
+        ],
+        "max_text_length": 64,
+        "pad_id": 0,
+        "lowercase": true,
+        "embedding_dim": 1152
+      },
+      "context_length": 0
+    },
+    {
+      "id": "siglip2-giant-384",
+      "name": "SigLIP 2 Giant/16 @384",
+      "type": "image_text",
+      "engine": "onnx",
+      "description": "Over 1B parameters, the most accurate image search. Needs a lot of RAM; index overnight.",
+      "repo": "onnx-community/siglip2-giant-opt-patch16-384-ONNX",
+      "files": [
+        {
+          "role": "vision",
+          "path": "onnx/vision_model_fp16.onnx",
+          "size": 903823
+        },
+        {
+          "role": "vision_data",
+          "path": "onnx/vision_model_fp16.onnx_data",
+          "size": 2327319552
+        },
+        {
+          "role": "text",
+          "path": "onnx/text_model_q4f16.onnx",
+          "size": 826410597
+        },
+        {
+          "role": "tokenizer",
+          "path": "tokenizer.json",
+          "size": 34363039
+        }
+      ],
+      "license": "Apache-2.0",
+      "languages": [
+        "multilingual"
+      ],
+      "recommended": false,
+      "config": {
+        "image_size": 384,
+        "resize": "squash",
+        "mean": [
+          0.5,
+          0.5,
+          0.5
+        ],
+        "std": [
+          0.5,
+          0.5,
+          0.5
+        ],
+        "max_text_length": 64,
+        "pad_id": 0,
+        "lowercase": true,
+        "embedding_dim": 1536
+      },
+      "context_length": 0
+    },
+    {
+      "id": "face-buffalo-s",
+      "name": "Faces: SCRFD 500M + MobileFaceNet",
+      "type": "face",
+      "engine": "onnx",
+      "description": "Tiny and fast face detection and recognition. Misses small or side faces more often.",
+      "repo": "immich-app/buffalo_s",
+      "files": [
+        {
+          "role": "detection",
+          "path": "detection/model.onnx",
+          "size": 2524817,
+          "local_name": "detection.onnx"
+        },
+        {
+          "role": "recognition",
+          "path": "recognition/model.onnx",
+          "size": 13616099,
+          "local_name": "recognition.onnx"
+        }
+      ],
+      "license": "InsightFace (non-commercial)",
+      "languages": [],
+      "recommended": false,
+      "config": {
+        "det_size": 640,
+        "threshold": 0.55,
+        "min_face_size": 20,
+        "assign_threshold": 0.5,
+        "embedding_dim": 512
+      },
+      "context_length": 0
+    },
+    {
+      "id": "face-buffalo-l",
+      "name": "Faces: SCRFD 10G + ArcFace R50",
+      "type": "face",
+      "engine": "onnx",
+      "description": "Strong detector and accurate recognition. The recommended default.",
+      "repo": "immich-app/buffalo_l",
+      "files": [
+        {
+          "role": "detection",
+          "path": "detection/model.onnx",
+          "size": 16923827,
+          "local_name": "detection.onnx"
+        },
+        {
+          "role": "recognition",
+          "path": "recognition/model.onnx",
+          "size": 174383860,
+          "local_name": "recognition.onnx"
+        }
+      ],
+      "license": "InsightFace (non-commercial)",
+      "languages": [],
+      "recommended": true,
+      "config": {
+        "det_size": 640,
+        "threshold": 0.55,
+        "min_face_size": 20,
+        "assign_threshold": 0.46,
+        "embedding_dim": 512
+      },
+      "context_length": 0
+    },
+    {
+      "id": "face-antelopev2",
+      "name": "Faces: SCRFD 10G + ArcFace R100",
+      "type": "face",
+      "engine": "onnx",
+      "description": "Most accurate: recognizes people across years, glasses and bad light.",
+      "repo": "immich-app/antelopev2",
+      "files": [
+        {
+          "role": "detection",
+          "path": "detection/model.onnx",
+          "size": 16923827,
+          "local_name": "detection.onnx"
+        },
+        {
+          "role": "recognition",
+          "path": "recognition/model.onnx",
+          "size": 260665334,
+          "local_name": "recognition.onnx"
+        }
+      ],
+      "license": "InsightFace (non-commercial)",
+      "languages": [],
+      "recommended": false,
+      "config": {
+        "det_size": 640,
+        "threshold": 0.55,
+        "min_face_size": 20,
+        "assign_threshold": 0.42,
+        "embedding_dim": 512
+      },
+      "context_length": 0
     }
   ]
 }

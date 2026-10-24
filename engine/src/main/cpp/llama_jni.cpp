@@ -277,6 +277,17 @@ Java_com_n3ttx_aicore_engine_LlamaNative_tokenCount(JNIEnv *env, jobject, jlong 
     return static_cast<jint>(tokenize(e->vocab, to_string(env, jtext), true, true).size());
 }
 
+JNIEXPORT jintArray JNICALL
+Java_com_n3ttx_aicore_engine_LlamaNative_tokenize(JNIEnv *env, jobject, jlong handle, jbyteArray jtext) {
+    Engine *e = as_engine(handle);
+    const std::vector<llama_token> tokens = tokenize(e->vocab, to_string(env, jtext), true, true);
+    jintArray arr = env->NewIntArray(static_cast<jsize>(tokens.size()));
+    if (arr != nullptr && !tokens.empty()) {
+        env->SetIntArrayRegion(arr, 0, static_cast<jsize>(tokens.size()), reinterpret_cast<const jint *>(tokens.data()));
+    }
+    return arr;
+}
+
 // stats (out): [prompt tokens, generated tokens, reused cached tokens]
 JNIEXPORT jint JNICALL
 Java_com_n3ttx_aicore_engine_LlamaNative_generate(JNIEnv *env, jobject, jlong handle, jbyteArray jprompt,
