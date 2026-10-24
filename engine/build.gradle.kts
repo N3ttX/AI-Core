@@ -4,7 +4,7 @@ plugins {
 
 android {
     namespace = "com.n3ttx.aicore.engine"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         minSdk = 36
