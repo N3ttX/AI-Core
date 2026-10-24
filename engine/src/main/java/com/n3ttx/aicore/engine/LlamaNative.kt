@@ -27,6 +27,7 @@ internal object LlamaNative {
     external fun info(handle: Long): String
     external fun applyChatTemplate(handle: Long, templateOverride: String?, roles: Array<ByteArray>, contents: Array<ByteArray>, addAssistant: Boolean): ByteArray?
     external fun tokenCount(handle: Long, text: ByteArray): Int
+    external fun tokenize(handle: Long, text: ByteArray): IntArray
 
     external fun generate(
         handle: Long,

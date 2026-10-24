@@ -95,6 +95,8 @@ class LlamaModel private constructor(private var handle: Long, val options: Load
 
     fun countTokens(text: String): Int = lock.withLock { LlamaNative.tokenCount(checkOpen(), text.toByteArray()) }
 
+    fun tokenize(text: String): IntArray = lock.withLock { LlamaNative.tokenize(checkOpen(), text.toByteArray()) }
+
     /**
      * Generates a completion for [prompt]. [onText] receives decoded text chunks and
      * returns false to stop early.

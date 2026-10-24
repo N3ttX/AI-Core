@@ -109,6 +109,14 @@ data class ModelInfo(
     val queryPrefix: String?,
     /** For embedding models: prefix to put before documents, if the model needs one. */
     val documentPrefix: String?,
+    /** [AICoreContract.Engine] that runs this model. */
+    val engine: String,
+    /** What this model can do, see [AICoreContract.Task]. */
+    val tasks: List<String>,
+    /** Model specific settings as JSON (image size, face match threshold, …), or null. */
+    val config: String?,
+    /** ONNX components (e.g. "vision", "text") usable with runModel. */
+    val components: List<String>,
 ) {
     companion object {
         fun fromBundle(b: Bundle) = ModelInfo(
@@ -122,6 +130,10 @@ data class ModelInfo(
             isDefault = b.getBoolean(Key.IS_DEFAULT),
             queryPrefix = b.getString(Key.QUERY_PREFIX),
             documentPrefix = b.getString(Key.DOCUMENT_PREFIX),
+            engine = b.getString(Key.ENGINE) ?: AICoreContract.Engine.LLAMA,
+            tasks = b.getStringArray(Key.TASKS)?.toList().orEmpty(),
+            config = b.getString(Key.CONFIG),
+            components = b.getStringArray(Key.COMPONENTS)?.toList().orEmpty(),
         )
     }
 }
@@ -130,7 +142,12 @@ data class ModelList(
     val models: List<ModelInfo>,
     val defaultChatModel: String?,
     val defaultEmbeddingModel: String?,
-)
+    /** Default model id per [AICoreContract.ModelType]. */
+    val defaults: Map<String, String> = emptyMap(),
+) {
+    fun default(type: String): ModelInfo? = defaults[type]?.let { id -> models.firstOrNull { it.id == id } }
+    fun ofType(type: String): List<ModelInfo> = models.filter { it.type == type }
+}
 
 data class CoreStatus(
     val apiVersion: Int,

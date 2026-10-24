@@ -2,6 +2,7 @@ package com.n3ttx.aicore.data
 
 import android.content.Context
 import android.util.Log
+import com.n3ttx.aicore.sdk.AICoreContract
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,6 +35,11 @@ data class CatalogEntry(
     val queryPrefix: String?,
     /** Prefix the client should add to documents (embedding models). */
     val documentPrefix: String?,
+    val engine: String = AICoreContract.Engine.LLAMA,
+    /** Hugging Face repo of a multi-file package. */
+    val repo: String? = null,
+    val files: List<ModelFile> = emptyList(),
+    val config: String? = null,
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("id", id)
@@ -52,19 +58,25 @@ data class CatalogEntry(
         assistantPrefix?.let { put("assistant_prefix", it) }
         queryPrefix?.let { put("query_prefix", it) }
         documentPrefix?.let { put("document_prefix", it) }
+        put("engine", engine)
+        repo?.let { put("repo", it) }
+        if (files.isNotEmpty()) put("files", JSONArray(files.map { it.toJson() }))
+        config?.let { put("config", JSONObject(it)) }
     }
 
     companion object {
         fun fromJson(o: JSONObject): CatalogEntry {
-            val url = o.getString("url")
+            val url = o.optString("url")
+            val files = o.optJSONArray("files")?.let { a -> List(a.length()) { ModelFile.fromJson(a.getJSONObject(it)) } }.orEmpty()
             return CatalogEntry(
                 id = o.getString("id"),
                 name = o.getString("name"),
                 type = o.getString("type"),
                 description = o.optString("description"),
                 url = url,
-                fileName = o.optString("file_name").ifEmpty { url.substringAfterLast('/').substringBefore('?') },
-                sizeBytes = o.optLong("size_bytes"),
+                fileName = o.optString("file_name").ifEmpty { url.substringAfterLast('/').substringBefore('?') }
+                    .ifEmpty { o.getString("id") },
+                sizeBytes = o.optLong("size_bytes").takeIf { it > 0 } ?: files.sumOf { it.sizeBytes },
                 sha256 = o.optStringOrNull("sha256"),
                 license = o.optString("license"),
                 languages = o.optJSONArray("languages")?.let { a -> List(a.length()) { a.getString(it) } }.orEmpty(),
@@ -74,6 +86,10 @@ data class CatalogEntry(
                 assistantPrefix = o.optStringOrNull("assistant_prefix"),
                 queryPrefix = o.optStringOrNull("query_prefix"),
                 documentPrefix = o.optStringOrNull("document_prefix"),
+                engine = o.optString("engine", if (files.isEmpty()) AICoreContract.Engine.LLAMA else AICoreContract.Engine.ONNX),
+                repo = o.optStringOrNull("repo"),
+                files = files,
+                config = o.optJSONObject("config")?.toString(),
             )
         }
     }
@@ -93,10 +109,15 @@ class CatalogRepository(private val context: Context, private val settings: Sett
 
     fun find(id: String): CatalogEntry? = state.value.firstOrNull { it.id == id }
 
+    /** The downloaded catalog wins unless the one shipped with the app is newer. */
     private fun loadLocal(): List<CatalogEntry> {
-        val cached = runCatching { if (cacheFile.exists()) parse(cacheFile.readText()) else null }.getOrNull()
-        return cached ?: parse(context.assets.open("catalog.json").bufferedReader().use { it.readText() })
+        val bundledText = context.assets.open("catalog.json").bufferedReader().use { it.readText() }
+        val cachedText = runCatching { if (cacheFile.exists()) cacheFile.readText() else null }.getOrNull()
+        val useCache = cachedText != null && runCatching { version(cachedText) >= version(bundledText) }.getOrDefault(false)
+        return (if (useCache) runCatching { parse(cachedText!!) }.getOrNull() else null) ?: parse(bundledText)
     }
+
+    private fun version(text: String): Int = JSONObject(text).optInt("version", 1)
 
     private fun parse(text: String): List<CatalogEntry> {
         val models = JSONObject(text).getJSONArray("models")

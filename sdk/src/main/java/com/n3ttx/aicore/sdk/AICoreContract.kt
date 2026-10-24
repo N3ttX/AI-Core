@@ -2,7 +2,7 @@ package com.n3ttx.aicore.sdk
 
 /** Constants shared by AI Core Hub and its clients. Changing a value breaks compatibility. */
 object AICoreContract {
-    const val API_VERSION = 1
+    const val API_VERSION = 2
 
     const val SERVICE_PACKAGE = "com.n3ttx.aicore"
     const val ACTION_BIND = "com.n3ttx.aicore.action.BIND"
@@ -10,8 +10,48 @@ object AICoreContract {
     const val ACTION_OPEN_MODELS = "com.n3ttx.aicore.action.OPEN_MODELS"
 
     object ModelType {
+        /** Text generation (llama.cpp, GGUF). */
         const val CHAT = "chat"
+        /** Text embeddings (llama.cpp, GGUF). */
         const val EMBEDDING = "embedding"
+        /** Image + text embeddings in a shared space, e.g. CLIP, SigLIP (ONNX). */
+        const val IMAGE_TEXT = "image_text"
+        /** Face detection + face embeddings, e.g. InsightFace SCRFD/ArcFace (ONNX). */
+        const val FACE = "face"
+        /** Any other ONNX model, used through runModel with raw tensors. */
+        const val ONNX = "onnx"
+
+        val ALL = listOf(CHAT, EMBEDDING, IMAGE_TEXT, FACE, ONNX)
+    }
+
+    object Engine {
+        const val LLAMA = "llama"
+        const val ONNX = "onnx"
+    }
+
+    /** Task names reported by getCapabilities. */
+    object Task {
+        const val CHAT = "chat"
+        const val COMPLETION = "completion"
+        const val JSON_MODE = "json_mode"
+        const val GRAMMAR = "grammar"
+        const val TEXT_EMBEDDING = "text_embedding"
+        const val IMAGE_EMBEDDING = "image_embedding"
+        const val MULTIMODAL_TEXT_EMBEDDING = "multimodal_text_embedding"
+        const val FACE_DETECTION = "face_detection"
+        const val FACE_EMBEDDING = "face_embedding"
+        const val ONNX_INFERENCE = "onnx_inference"
+        const val TOKENIZE = "tokenize"
+    }
+
+    object DType {
+        const val FLOAT32 = "float32"
+        const val FLOAT16 = "float16"
+        const val INT64 = "int64"
+        const val INT32 = "int32"
+        const val INT8 = "int8"
+        const val UINT8 = "uint8"
+        const val BOOL = "bool"
     }
 
     object AccessState {
@@ -111,7 +151,54 @@ object AICoreContract {
         const val COUNT = "count"
         const val DIMENSION = "dimension"
 
-        // Token count
+        // Token count / tokenize
         const val TOKEN_COUNT = "token_count"
+        const val TOKEN_IDS = "token_ids"
+
+        // Model details (API 2)
+        const val ENGINE = "engine"
+        const val CONFIG = "config"
+        const val TASKS = "tasks"
+        const val DESCRIPTION = "description"
+        const val INSTALLED = "installed"
+        const val DOWNLOADING = "downloading"
+        const val COMPONENTS = "components"
+        const val DEFAULTS = "defaults"
+        /** A whole model package as JSON (same format as AI Core's catalog.json entries). */
+        const val PACKAGE = "package"
+
+        // Capabilities
+        const val ENGINES = "engines"
+        const val MODEL_TYPES = "model_types"
+        const val MAX_BATCH = "max_batch"
+
+        // Images
+        const val IMAGES = "images"
+        const val BITMAP = "bitmap"
+        const val FD = "fd"
+        /** Longest side to decode file images to (default depends on the task). */
+        const val MAX_DIMENSION = "max_dimension"
+        const val WIDTH = "width"
+        const val HEIGHT = "height"
+
+        // Faces
+        const val FACES = "faces"
+        const val BOX = "box"
+        const val BOX_NORMALIZED = "box_normalized"
+        const val LANDMARKS = "landmarks"
+        const val SCORE = "score"
+        const val EMBEDDING = "embedding"
+        const val THRESHOLD = "threshold"
+        const val MIN_FACE_SIZE = "min_face_size"
+        const val WITH_EMBEDDINGS = "with_embeddings"
+
+        // Raw tensors
+        const val COMPONENT = "component"
+        const val INPUTS = "inputs"
+        const val OUTPUTS = "outputs"
+        const val DTYPE = "dtype"
+        const val SHAPE = "shape"
+        const val BYTES = "bytes"
+        const val SHARED_MEMORY = "shared_memory"
     }
 }

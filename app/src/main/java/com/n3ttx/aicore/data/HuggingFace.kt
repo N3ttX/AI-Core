@@ -12,7 +12,7 @@ data class HubFile(val repo: String, val path: String, val sizeBytes: Long) {
         get() = "https://huggingface.co/$repo/resolve/main/" + path.split('/').joinToString("/") { URLEncoder.encode(it, "UTF-8").replace("+", "%20") }
 }
 
-/** Minimal anonymous Hugging Face Hub client to list GGUF files of a public repository. */
+/** Minimal anonymous Hugging Face Hub client to list model files (GGUF, ONNX) of a public repository. */
 object HuggingFace {
     private val REPO = Regex("^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
 
@@ -23,7 +23,7 @@ object HuggingFace {
         return repo.takeIf { REPO.matches(it) }
     }
 
-    suspend fun listGgufFiles(repo: String): List<HubFile> = withContext(Dispatchers.IO) {
+    suspend fun listModelFiles(repo: String): List<HubFile> = withContext(Dispatchers.IO) {
         val conn = URL("https://huggingface.co/api/models/$repo/tree/main?recursive=true").openConnection() as HttpURLConnection
         conn.connectTimeout = 15_000
         conn.readTimeout = 30_000
@@ -36,7 +36,10 @@ object HuggingFace {
             }
             val a = JSONArray(conn.inputStream.bufferedReader().use { it.readText() })
             List(a.length()) { a.getJSONObject(it) }
-                .filter { it.optString("type") == "file" && it.optString("path").endsWith(".gguf", ignoreCase = true) }
+                .filter {
+                    val path = it.optString("path")
+                    it.optString("type") == "file" && (path.endsWith(".gguf", ignoreCase = true) || path.endsWith(".onnx", ignoreCase = true))
+                }
                 // Skip vision projectors and drafter files, which are not standalone models.
                 .filterNot { Regex("mmproj|mtp-", RegexOption.IGNORE_CASE).containsMatchIn(it.optString("path")) }
                 .map { HubFile(repo, it.getString("path"), it.optJSONObject("lfs")?.optLong("size") ?: it.optLong("size")) }

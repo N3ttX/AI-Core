@@ -1,6 +1,7 @@
 package com.n3ttx.aicore.data
 
 import android.content.Context
+import com.n3ttx.aicore.sdk.AICoreContract.ModelType
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -12,10 +13,18 @@ data class CoreSettings(
     val memoryBudgetMb: Int = 8192,
     val idleUnloadMinutes: Int = 10,
     val hideThinking: Boolean = true,
-    val defaultChatModel: String? = null,
-    val defaultEmbeddingModel: String? = null,
+    /** XNNPACK execution provider for ONNX models. Faster for some models, slower for others. */
+    val useXnnpack: Boolean = false,
+    /** Default model id per [ModelType]. */
+    val defaults: Map<String, String> = emptyMap(),
     val catalogUrl: String = DEFAULT_CATALOG_URL,
 ) {
+    val defaultChatModel: String? get() = defaults[ModelType.CHAT]
+    val defaultEmbeddingModel: String? get() = defaults[ModelType.EMBEDDING]
+
+    fun withDefault(type: String, id: String?): CoreSettings =
+        copy(defaults = if (id == null) defaults - type else defaults + (type to id))
+
     companion object {
         const val DEFAULT_CATALOG_URL =
             "https://raw.githubusercontent.com/N3ttX/AI-Core/main/app/src/main/assets/catalog.json"
@@ -31,6 +40,8 @@ class SettingsStore(context: Context) {
 
     val current: CoreSettings get() = state.value
 
+    private fun key(type: String) = "default_${type}_model"
+
     private fun read(): CoreSettings {
         val d = CoreSettings()
         return CoreSettings(
@@ -39,8 +50,8 @@ class SettingsStore(context: Context) {
             memoryBudgetMb = prefs.getInt("memory_budget_mb", d.memoryBudgetMb),
             idleUnloadMinutes = prefs.getInt("idle_unload_minutes", d.idleUnloadMinutes),
             hideThinking = prefs.getBoolean("hide_thinking", d.hideThinking),
-            defaultChatModel = prefs.getString("default_chat_model", null),
-            defaultEmbeddingModel = prefs.getString("default_embedding_model", null),
+            useXnnpack = prefs.getBoolean("use_xnnpack", d.useXnnpack),
+            defaults = ModelType.ALL.mapNotNull { t -> prefs.getString(key(t), null)?.let { t to it } }.toMap(),
             catalogUrl = prefs.getString("catalog_url", null) ?: d.catalogUrl,
         )
     }
@@ -48,16 +59,16 @@ class SettingsStore(context: Context) {
     @Synchronized
     fun update(transform: (CoreSettings) -> CoreSettings) {
         val s = transform(state.value)
-        prefs.edit()
+        val edit = prefs.edit()
             .putInt("context_length", s.contextLength)
             .putInt("threads", s.threads)
             .putInt("memory_budget_mb", s.memoryBudgetMb)
             .putInt("idle_unload_minutes", s.idleUnloadMinutes)
             .putBoolean("hide_thinking", s.hideThinking)
-            .putString("default_chat_model", s.defaultChatModel)
-            .putString("default_embedding_model", s.defaultEmbeddingModel)
+            .putBoolean("use_xnnpack", s.useXnnpack)
             .putString("catalog_url", s.catalogUrl)
-            .apply()
+        ModelType.ALL.forEach { t -> edit.putString(key(t), s.defaults[t]) }
+        edit.apply()
         state.value = s
     }
 }

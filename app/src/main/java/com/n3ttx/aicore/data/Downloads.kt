@@ -23,7 +23,7 @@ import java.security.MessageDigest
 data class DownloadState(
     val spec: ModelSpec,
     val downloadedBytes: Long = 0,
-    val totalBytes: Long = spec.sizeBytes,
+    val totalBytes: Long = spec.totalBytes,
     val status: Status = Status.QUEUED,
     val error: String? = null,
 ) {
@@ -48,7 +48,7 @@ class DownloadController(private val context: Context, private val store: ModelS
     var onInstalled: ((ModelSpec) -> Unit)? = null
 
     fun enqueue(spec: ModelSpec) {
-        requireNotNull(spec.url) { "Model has no download URL" }
+        require(spec.url != null || spec.isPackage) { "Model has no download URL" }
         if (store.get(spec.id) != null) return
         cancelled = cancelled - spec.id
         state.update { current ->
@@ -61,8 +61,10 @@ class DownloadController(private val context: Context, private val store: ModelS
 
     fun cancel(id: String) {
         cancelled = cancelled + id
+        val spec = state.value[id]?.spec
         state.update { it - id }
         File(store.modelsDir, partName(id)).delete()
+        if (spec?.isPackage == true && store.get(id) == null) store.dirOf(spec).deleteRecursively()
     }
 
     fun dismiss(id: String) {
@@ -83,9 +85,13 @@ class DownloadController(private val context: Context, private val store: ModelS
     suspend fun run(item: DownloadState) = withContext(Dispatchers.IO) {
         val spec = item.spec
         set(spec.id) { it.copy(status = DownloadState.Status.RUNNING, error = null) }
+        if (spec.isPackage) {
+            runPackage(spec)
+            return@withContext
+        }
         val part = File(store.modelsDir, partName(spec.id))
         try {
-            download(spec, part)
+            download(spec.id, requireNotNull(spec.url), part, 0L, spec.sizeBytes)
             if (spec.id in cancelled) return@withContext
             if (!ModelStore.isGguf(part)) throw IOException("Downloaded file is not a GGUF model")
             spec.sha256?.let { expected ->
@@ -110,23 +116,62 @@ class DownloadController(private val context: Context, private val store: ModelS
         }
     }
 
-    private suspend fun download(spec: ModelSpec, part: File) {
+    /** Downloads every file of a package into its folder; finished files are kept for resuming. */
+    private suspend fun runPackage(spec: ModelSpec) {
+        val dir = store.dirOf(spec).apply { mkdirs() }
+        try {
+            val total = spec.files.sumOf { it.sizeBytes }
+            set(spec.id) { it.copy(totalBytes = total) }
+            var before = 0L
+            for (file in spec.files) {
+                if (spec.id in cancelled) return
+                val target = store.fileOf(spec, file)
+                if (!(target.exists() && file.sizeBytes > 0 && target.length() == file.sizeBytes)) {
+                    val part = File(dir, file.localName + ".part")
+                    download(spec.id, file.url(spec.repo), part, before, total)
+                    if (spec.id in cancelled) return
+                    if (!part.renameTo(target)) throw IOException("Could not move ${file.localName} into place")
+                }
+                before += target.length()
+                set(spec.id) { it.copy(downloadedBytes = before) }
+            }
+            val installed = spec.copy(
+                files = spec.files.map { it.copy(sizeBytes = store.fileOf(spec, it).length()) },
+                installedAt = System.currentTimeMillis(),
+            )
+            store.add(installed)
+            state.update { it - spec.id }
+            onInstalled?.invoke(installed)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (spec.id in cancelled) return
+            Log.w(TAG, "Download of ${spec.id} failed", e)
+            set(spec.id) { it.copy(status = DownloadState.Status.FAILED, error = e.message ?: e.javaClass.simpleName) }
+        }
+    }
+
+    /**
+     * Downloads [url] into [part], resuming if it exists. [before] are bytes of earlier files of the
+     * same package and [total] the size of the whole package, for the progress display.
+     */
+    private suspend fun download(id: String, url: String, part: File, before: Long, total: Long) {
         var attempt = 0
         while (true) {
             try {
-                downloadOnce(spec, part)
+                downloadOnce(id, url, part, before, total)
                 return
             } catch (e: IOException) {
-                if (++attempt >= 4 || spec.id in cancelled) throw e
-                Log.i(TAG, "Retrying ${spec.id} after: ${e.message}")
+                if (++attempt >= 4 || id in cancelled) throw e
+                Log.i(TAG, "Retrying $id after: ${e.message}")
                 kotlinx.coroutines.delay(2000L * attempt)
             }
         }
     }
 
-    private suspend fun downloadOnce(spec: ModelSpec, part: File) {
+    private suspend fun downloadOnce(id: String, url: String, part: File, before: Long, totalHint: Long) {
         val offset = if (part.exists()) part.length() else 0L
-        val conn = URL(spec.url).openConnection() as HttpURLConnection
+        val conn = URL(url).openConnection() as HttpURLConnection
         conn.instanceFollowRedirects = true
         conn.connectTimeout = 20_000
         conn.readTimeout = 60_000
@@ -144,8 +189,8 @@ class DownloadController(private val context: Context, private val store: ModelS
             }
             val length = conn.getHeaderField("Content-Length")?.toLongOrNull() ?: -1L
             val start = if (append) offset else 0L
-            val total = if (length >= 0) start + length else spec.sizeBytes
-            set(spec.id) { it.copy(downloadedBytes = start, totalBytes = total) }
+            val total = if (before == 0L && length >= 0 && totalHint <= 0) start + length else maxOf(totalHint, before + start + maxOf(length, 0))
+            set(id) { it.copy(downloadedBytes = before + start, totalBytes = total) }
 
             conn.inputStream.use { input ->
                 FileOutputStream(part, append).use { out ->
@@ -154,17 +199,17 @@ class DownloadController(private val context: Context, private val store: ModelS
                     var lastReport = 0L
                     while (true) {
                         currentCoroutineContext().ensureActive()
-                        if (spec.id in cancelled) return
+                        if (id in cancelled) return
                         val n = input.read(buf)
                         if (n < 0) break
                         out.write(buf, 0, n)
                         done += n
                         if (done - lastReport > (1 shl 20)) {
                             lastReport = done
-                            set(spec.id) { it.copy(downloadedBytes = done) }
+                            set(id) { it.copy(downloadedBytes = before + done) }
                         }
                     }
-                    set(spec.id) { it.copy(downloadedBytes = done) }
+                    set(id) { it.copy(downloadedBytes = before + done) }
                     if (length >= 0 && done < start + length) throw IOException("Connection closed early")
                 }
             }

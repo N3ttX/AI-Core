@@ -9,6 +9,9 @@ import com.n3ttx.aicore.data.ModelStore
 import com.n3ttx.aicore.data.SettingsStore
 import com.n3ttx.aicore.engine.LlamaModel
 import com.n3ttx.aicore.engine.LoadOptions
+import com.n3ttx.aicore.engine.onnx.OnnxModel
+import com.n3ttx.aicore.engine.onnx.OnnxOptions
+import com.n3ttx.aicore.sdk.AICoreContract
 import com.n3ttx.aicore.sdk.AICoreContract.ModelType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -21,6 +24,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.Closeable
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -42,7 +46,8 @@ class ModelRuntime(
     private val settings: SettingsStore,
     private val scope: CoroutineScope,
 ) {
-    private class Loaded(val spec: ModelSpec, val model: LlamaModel, val options: LoadOptions, var lastUsedAt: Long)
+    /** [engine] is a [LlamaModel] or an [OnnxModel]; [options] decides whether a reload is needed. */
+    private class Loaded(val spec: ModelSpec, val engine: Closeable, val options: Any, var lastUsedAt: Long)
 
     private class Running(val uid: Int, val job: Job) {
         @Volatile var model: LlamaModel? = null
@@ -107,7 +112,14 @@ class ModelRuntime(
     /**
      * Runs [block] with [spec] loaded, on the inference thread.
      */
-    suspend fun <T> withModel(requestId: String, spec: ModelSpec, clientLabel: String, kind: String, block: (LlamaModel) -> T): T {
+    suspend fun <T> withModel(requestId: String, spec: ModelSpec, clientLabel: String, kind: String, block: (LlamaModel) -> T): T =
+        withEngine(requestId, spec, clientLabel, kind) { block(it as LlamaModel) }
+
+    /** Runs [block] with the ONNX package [spec] loaded, on the inference thread. */
+    suspend fun <T> withOnnx(requestId: String, spec: ModelSpec, clientLabel: String, kind: String, block: (OnnxModel) -> T): T =
+        withEngine(requestId, spec, clientLabel, kind) { block(it as OnnxModel) }
+
+    private suspend fun <T> withEngine(requestId: String, spec: ModelSpec, clientLabel: String, kind: String, block: (Closeable) -> T): T {
         queued.update { it + 1 }
         var dequeued = false
         try {
@@ -116,11 +128,11 @@ class ModelRuntime(
                 dequeued = true
                 val l = acquire(spec)
                 val r = running[requestId]
-                r?.model = l.model
+                r?.model = l.engine as? LlamaModel
                 activeState.value = ActiveRequest(requestId, spec.id, clientLabel, kind, System.currentTimeMillis())
                 try {
                     if (r?.cancelled == true) throw kotlinx.coroutines.CancellationException("Cancelled")
-                    block(l.model)
+                    block(l.engine)
                 } finally {
                     r?.model = null
                     activeState.value = null
@@ -133,8 +145,9 @@ class ModelRuntime(
         }
     }
 
-    private fun optionsFor(spec: ModelSpec): LoadOptions {
+    private fun optionsFor(spec: ModelSpec): Any {
         val s = settings.current
+        if (spec.engine == AICoreContract.Engine.ONNX) return OnnxOptions(threads = s.threads, xnnpack = s.useXnnpack)
         val embeddings = spec.type == ModelType.EMBEDDING
         val ctx = if (embeddings) 2048 else s.contextLength
         return LoadOptions(contextLength = ctx, batchSize = 512, threads = s.threads, embeddings = embeddings)
@@ -147,17 +160,20 @@ class ModelRuntime(
             unloadNow(spec.id) // settings changed, reload
         }
         makeRoomFor(spec)
-        val file = store.fileOf(spec)
         Log.i(TAG, "Loading ${spec.id} with $options")
-        val model = LlamaModel.load(file.absolutePath, options)
-        val l = Loaded(spec, model, options, System.currentTimeMillis())
+        val engine: Closeable = if (options is OnnxOptions) {
+            OnnxModel(store.componentFiles(spec), options)
+        } else {
+            LlamaModel.load(store.fileOf(spec).absolutePath, options as LoadOptions)
+        }
+        val l = Loaded(spec, engine, options, System.currentTimeMillis())
         loaded[spec.id] = l
         publish()
         return l
     }
 
     private fun estimateBytes(spec: ModelSpec): Long {
-        val file = store.fileOf(spec).length()
+        val file = store.sizeOnDisk(spec)
         // Weights plus a rough allowance for KV cache and compute buffers.
         return file + file / 5 + 256L * 1024 * 1024
     }
@@ -179,13 +195,13 @@ class ModelRuntime(
     private fun unloadNow(id: String) {
         val l = loaded.remove(id) ?: return
         Log.i(TAG, "Unloading $id")
-        l.model.close()
+        l.engine.close()
         publish()
     }
 
     private fun publish() {
         loadedState.value = loaded.values.map {
-            LoadedModelInfo(it.spec.id, it.spec.name, it.spec.type, store.fileOf(it.spec).length(), it.lastUsedAt)
+            LoadedModelInfo(it.spec.id, it.spec.name, it.spec.type, store.sizeOnDisk(it.spec), it.lastUsedAt)
         }
     }
 

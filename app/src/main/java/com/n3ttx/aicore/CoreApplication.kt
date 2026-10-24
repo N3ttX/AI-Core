@@ -51,8 +51,7 @@ class AppGraph(context: Context) {
 
     /** The model used when a request does not name one. */
     fun defaultModel(type: String): ModelSpec? {
-        val s = settings.current
-        val preferred = if (type == ModelType.EMBEDDING) s.defaultEmbeddingModel else s.defaultChatModel
+        val preferred = settings.current.defaults[type]
         return preferred?.let { store.get(it) }?.takeIf { it.type == type }
             ?: store.installed.value.firstOrNull { it.type == type }
     }
@@ -60,10 +59,7 @@ class AppGraph(context: Context) {
     /** Points the defaults at installed models when they are unset or were removed. */
     fun ensureDefaults() {
         settings.update { s ->
-            s.copy(
-                defaultChatModel = defaultModel(ModelType.CHAT)?.id,
-                defaultEmbeddingModel = defaultModel(ModelType.EMBEDDING)?.id,
-            )
+            s.copy(defaults = ModelType.ALL.mapNotNull { t -> defaultModel(t)?.let { t to it.id } }.toMap())
         }
     }
 

@@ -4,6 +4,7 @@ package com.n3ttx.aicore.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -42,6 +43,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.n3ttx.aicore.data.ModelSpec
 import com.n3ttx.aicore.graph
@@ -50,6 +52,7 @@ import com.n3ttx.aicore.sdk.ChatMessage
 import com.n3ttx.aicore.sdk.GenerationEvent
 import com.n3ttx.aicore.sdk.GenerationOptions
 import com.n3ttx.aicore.sdk.GenerationRequest
+import com.n3ttx.aicore.sdk.ImageInput
 import com.n3ttx.aicore.sdk.AICoreContract.ModelType
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -70,13 +73,17 @@ fun PlaygroundScreen() {
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Text("Playground", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.padding(top = 16.dp))
         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-            listOf("Chat", "Embeddings").forEachIndexed { i, label ->
-                SegmentedButton(selected = mode == i, onClick = { mode = i }, shape = SegmentedButtonDefaults.itemShape(i, 2)) {
-                    Text(label)
+            listOf("Chat", "Embeddings", "Vision").forEachIndexed { i, label ->
+                SegmentedButton(selected = mode == i, onClick = { mode = i }, shape = SegmentedButtonDefaults.itemShape(i, 3), icon = {}) {
+                    Text(label, maxLines = 1)
                 }
             }
         }
-        if (mode == 0) ChatPlayground(client) else EmbeddingPlayground(client)
+        when (mode) {
+            0 -> ChatPlayground(client)
+            1 -> EmbeddingPlayground(client)
+            else -> VisionPlayground(client)
+        }
     }
 }
 
@@ -257,4 +264,108 @@ private fun cosine(x: FloatArray, y: FloatArray): Double {
         ny += y[i] * y[i]
     }
     return if (nx == 0.0 || ny == 0.0) 0.0 else dot / (sqrt(nx) * sqrt(ny))
+}
+
+@Composable
+private fun VisionPlayground(client: AICoreClient) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var uri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var preview by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var task by remember { mutableStateOf(0) }
+    var imageModel by remember { mutableStateOf<String?>(null) }
+    var faceModel by remember { mutableStateOf<String?>(null) }
+    var labels by remember { mutableStateOf("a dog, a cat, a beach, food, a group of people, a document, a car") }
+    var result by remember { mutableStateOf<String?>(null) }
+    var faces by remember { mutableStateOf<List<android.graphics.RectF>>(emptyList()) }
+    var busy by remember { mutableStateOf(false) }
+    val picker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia(),
+    ) { picked ->
+        if (picked != null) {
+            uri = picked
+            result = null
+            faces = emptyList()
+        }
+    }
+    LaunchedEffect(uri) {
+        val u = uri ?: return@LaunchedEffect
+        preview = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                android.graphics.ImageDecoder.decodeBitmap(android.graphics.ImageDecoder.createSource(context.contentResolver, u)) { d, info, _ ->
+                    val longest = maxOf(info.size.width, info.size.height)
+                    if (longest > 1024) d.setTargetSampleSize(longest / 1024)
+                }
+            }.getOrNull()
+        }
+    }
+
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Hint("Tests image search and face detection through the same service other apps use.")
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedButton(onClick = {
+                picker.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly))
+            }) { Text(if (uri == null) "Pick a photo" else "Other photo") }
+            FilterChip(selected = task == 0, onClick = { task = 0; result = null }, label = { Text("Search") })
+            FilterChip(selected = task == 1, onClick = { task = 1; result = null }, label = { Text("Faces") })
+        }
+        preview?.let { bmp ->
+            SectionCard {
+                Box {
+                    androidx.compose.foundation.Image(
+                        bitmap = bmp.asImageBitmap(),
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxWidth().aspectRatio(bmp.width.toFloat() / bmp.height),
+                    )
+                    val boxColor = MaterialTheme.colorScheme.primary
+                    androidx.compose.foundation.Canvas(Modifier.matchParentSize()) {
+                        faces.forEach { f ->
+                            drawRect(
+                                color = boxColor,
+                                topLeft = androidx.compose.ui.geometry.Offset(f.left * size.width, f.top * size.height),
+                                size = androidx.compose.ui.geometry.Size(f.width() * size.width, f.height() * size.height),
+                                style = androidx.compose.ui.graphics.drawscope.Stroke(width = 3.dp.toPx()),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        if (task == 0) {
+            ModelPicker(ModelType.IMAGE_TEXT, imageModel) { imageModel = it }
+            OutlinedTextField(labels, { labels = it }, label = { Text("Search terms, comma separated") }, modifier = Modifier.fillMaxWidth())
+        } else {
+            ModelPicker(ModelType.FACE, faceModel) { faceModel = it }
+        }
+        Button(
+            enabled = !busy && uri != null && (if (task == 0) imageModel else faceModel) != null,
+            onClick = {
+                val u = uri ?: return@Button
+                busy = true
+                scope.launch {
+                    result = try {
+                        val start = System.currentTimeMillis()
+                        if (task == 0) {
+                            val terms = labels.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+                            val image = client.embedImages(listOf(ImageInput.of(context, u)), model = imageModel).vectors.first()
+                            val texts = client.embed(terms, model = imageModel, type = ModelType.IMAGE_TEXT).vectors
+                            val ranked = terms.zip(texts.map { cosine(image, it) }).sortedByDescending { it.second }
+                            "${System.currentTimeMillis() - start} ms\n" +
+                                ranked.joinToString("\n") { (t, score) -> String.format(Locale.ROOT, "%.3f  %s", score, t) }
+                        } else {
+                            val r = client.detectFaces(listOf(ImageInput.of(context, u)), model = faceModel).first()
+                            faces = r.faces.map { it.boxNormalized }
+                            "${r.faces.size} faces · ${System.currentTimeMillis() - start} ms\n" +
+                                r.faces.joinToString("\n") { String.format(Locale.ROOT, "score %.2f · embedding %d", it.score, it.embedding.size) }
+                        }
+                    } catch (e: Exception) {
+                        "Error: ${e.message}"
+                    }
+                    busy = false
+                }
+            },
+        ) { Text(if (busy) "Working…" else if (task == 0) "Rank search terms" else "Detect faces") }
+        result?.let { SectionCard { Text(it, Modifier.padding(16.dp), style = MaterialTheme.typography.bodyMedium) } }
+        ColumnScopeSpacer()
+    }
 }
