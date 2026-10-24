@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.n3ttx.aicore"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.n3ttx.aicore"
