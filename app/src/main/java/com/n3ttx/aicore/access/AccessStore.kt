@@ -91,11 +91,26 @@ class AccessStore(private val context: Context) {
         return true
     }
 
+    /** Requests since the last write of [recordUse], by package. */
+    private val pendingUses = HashMap<String, Int>()
+    private var lastUseWrite = 0L
+
+    /**
+     * Counts a request. It is called for every request, which for a batch job is many per second: writing the file (and
+     * updating the UI) each time made AI Core Hub sluggish, so the counts are written at most every [USE_WRITE_INTERVAL_MS].
+     */
     @Synchronized
     fun recordUse(packageName: String) {
-        val c = get(packageName) ?: return
-        write(state.value.map {
-            if (it.packageName == packageName) c.copy(lastUsedAt = System.currentTimeMillis(), requestCount = c.requestCount + 1) else it
+        if (get(packageName) == null) return
+        pendingUses[packageName] = (pendingUses[packageName] ?: 0) + 1
+        val now = System.currentTimeMillis()
+        if (now - lastUseWrite < USE_WRITE_INTERVAL_MS) return
+        lastUseWrite = now
+        val uses = HashMap(pendingUses)
+        pendingUses.clear()
+        write(state.value.map { c ->
+            val n = uses[c.packageName] ?: return@map c
+            c.copy(lastUsedAt = now, requestCount = c.requestCount + n)
         })
     }
 
@@ -116,4 +131,8 @@ class AccessStore(private val context: Context) {
         signers.map { it.toByteArray() }.sortedBy { it.contentHashCode() }.forEach { md.update(it) }
         md.digest().joinToString("") { "%02x".format(it) }
     }.getOrDefault("")
+
+    private companion object {
+        const val USE_WRITE_INTERVAL_MS = 30_000L
+    }
 }
