@@ -47,7 +47,7 @@ class ModelRuntime(
     private val scope: CoroutineScope,
 ) {
     /** [engine] is a [LlamaModel] or an [OnnxModel]; [options] decides whether a reload is needed. */
-    private class Loaded(val spec: ModelSpec, val engine: Closeable, val options: Any, var lastUsedAt: Long)
+    private class Loaded(val spec: ModelSpec, val engine: Closeable, val options: Any, var lastUsedAt: Long, val loadedAt: Long, val sizeBytes: Long)
 
     private class Running(val uid: Int, val job: Job) {
         @Volatile var model: LlamaModel? = null
@@ -70,6 +70,9 @@ class ModelRuntime(
 
     private val activeState = MutableStateFlow<ActiveRequest?>(null)
     val active: StateFlow<ActiveRequest?> = activeState.asStateFlow()
+
+    /** Clears [activeState] a moment after a request, unless the next one has started (see [withEngine]). */
+    private var idleJob: Job? = null
 
     private val queued = MutableStateFlow(0)
     val queuedCount: StateFlow<Int> = queued.asStateFlow()
@@ -129,15 +132,21 @@ class ModelRuntime(
                 val l = acquire(spec)
                 val r = running[requestId]
                 r?.model = l.engine as? LlamaModel
+                idleJob?.cancel()
                 activeState.value = ActiveRequest(requestId, spec.id, clientLabel, kind, System.currentTimeMillis())
                 try {
                     if (r?.cancelled == true) throw kotlinx.coroutines.CancellationException("Cancelled")
                     block(l.engine)
                 } finally {
                     r?.model = null
-                    activeState.value = null
                     l.lastUsedAt = System.currentTimeMillis()
-                    publish()
+                    // Batch jobs (e.g. a gallery indexing one photo per request) would switch "Working" to idle and back for
+                    // every request: the status only turns idle when no request follows within a moment.
+                    idleJob = scope.launch {
+                        delay(IDLE_DISPLAY_DELAY_MS)
+                        val current = activeState.value
+                        if (current?.requestId == requestId) activeState.compareAndSet(current, null)
+                    }
                 }
             }
         } finally {
@@ -166,7 +175,8 @@ class ModelRuntime(
         } else {
             LlamaModel.load(store.fileOf(spec).absolutePath, options as LoadOptions)
         }
-        val l = Loaded(spec, engine, options, System.currentTimeMillis())
+        val now = System.currentTimeMillis()
+        val l = Loaded(spec, engine, options, now, now, store.sizeOnDisk(spec))
         loaded[spec.id] = l
         publish()
         return l
@@ -199,9 +209,13 @@ class ModelRuntime(
         publish()
     }
 
+    /**
+     * Publishes the loaded models when one is loaded or unloaded (not after every request), in the order they were loaded:
+     * the LRU order of [loaded] changes with every request, and the list in the UI would jump around.
+     */
     private fun publish() {
-        loadedState.value = loaded.values.map {
-            LoadedModelInfo(it.spec.id, it.spec.name, it.spec.type, store.sizeOnDisk(it.spec), it.lastUsedAt)
+        loadedState.value = loaded.values.sortedBy { it.loadedAt }.map {
+            LoadedModelInfo(it.spec.id, it.spec.name, it.spec.type, it.sizeBytes, it.lastUsedAt)
         }
     }
 
@@ -218,5 +232,6 @@ class ModelRuntime(
 
     companion object {
         private const val TAG = "ModelRuntime"
+        private const val IDLE_DISPLAY_DELAY_MS = 1500L
     }
 }
