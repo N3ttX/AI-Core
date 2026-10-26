@@ -75,6 +75,16 @@ class ModelRuntime(
     /** Clears [activeState] a moment after a request, unless the next one has started (see [withEngine]). */
     private var idleJob: Job? = null
 
+    private val lastUsedState = MutableStateFlow<Map<String, Long>>(emptyMap())
+
+    /** When each loaded model last finished a request (not part of [loadedModels], which only changes on load/unload). */
+    val lastUsed: StateFlow<Map<String, Long>> = lastUsedState.asStateFlow()
+
+    private val loadingState = MutableStateFlow<String?>(null)
+
+    /** Name of the model being loaded right now, if any. */
+    val loading: StateFlow<String?> = loadingState.asStateFlow()
+
     private val queued = MutableStateFlow(0)
     val queuedCount: StateFlow<Int> = queued.asStateFlow()
 
@@ -131,11 +141,23 @@ class ModelRuntime(
      */
     private val interactive = MutableStateFlow(0)
 
+    private val backgroundWaiting = MutableStateFlow(0)
+
+    /** Background requests waiting for interactive ones, for the debug notification. */
+    val waitingBackground: StateFlow<Int> = backgroundWaiting.asStateFlow()
+
     private suspend fun <T> withEngine(
         requestId: String, spec: ModelSpec, clientLabel: String, kind: String, background: Boolean, block: (Closeable) -> T,
     ): T {
         if (background) {
-            interactive.first { it == 0 }
+            if (interactive.value > 0) {
+                backgroundWaiting.update { it + 1 }
+                try {
+                    interactive.first { it == 0 }
+                } finally {
+                    backgroundWaiting.update { it - 1 }
+                }
+            }
         } else {
             interactive.update { it + 1 }
         }
@@ -164,6 +186,7 @@ class ModelRuntime(
                 } finally {
                     r?.model = null
                     l.lastUsedAt = System.currentTimeMillis()
+                    lastUsedState.update { it + (spec.id to l.lastUsedAt) }
                     // Batch jobs (e.g. a gallery indexing one photo per request) would switch "Working" to idle and back for
                     // every request: the status only turns idle when no request follows within a moment.
                     idleJob = scope.launch {
@@ -194,10 +217,15 @@ class ModelRuntime(
         }
         makeRoomFor(spec)
         Log.i(TAG, "Loading ${spec.id} with $options")
-        val engine: Closeable = if (options is OnnxOptions) {
-            OnnxModel(store.componentFiles(spec), options)
-        } else {
-            LlamaModel.load(store.ggufOf(spec).absolutePath, options as LoadOptions)
+        loadingState.value = spec.name
+        val engine: Closeable = try {
+            if (options is OnnxOptions) {
+                OnnxModel(store.componentFiles(spec), options)
+            } else {
+                LlamaModel.load(store.ggufOf(spec).absolutePath, options as LoadOptions)
+            }
+        } finally {
+            loadingState.value = null
         }
         val now = System.currentTimeMillis()
         val l = Loaded(spec, engine, options, now, now, store.sizeOnDisk(spec))

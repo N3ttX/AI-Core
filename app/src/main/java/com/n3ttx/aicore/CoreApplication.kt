@@ -39,6 +39,7 @@ class AppGraph(context: Context) {
     val modelRequests = ModelRequestStore(context)
     val runtime = ModelRuntime(context, store, settings, scope)
     val notifier = Notifier(context)
+    val debugNotification = com.n3ttx.aicore.runtime.DebugNotification(context, runtime, settings, scope)
 
     init {
         downloads.onInstalled = { spec ->
@@ -47,6 +48,7 @@ class AppGraph(context: Context) {
             notifier.modelInstalled(spec)
         }
         ensureDefaults()
+        debugNotification.start()
     }
 
     /** The model used when a request does not name one. */
