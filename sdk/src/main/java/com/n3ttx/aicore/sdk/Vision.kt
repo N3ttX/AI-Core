@@ -98,4 +98,6 @@ data class CatalogModel(
     val downloading: Boolean,
     /** Model specific settings as JSON, e.g. embedding size or face match threshold. */
     val config: String?,
+    /** What the model can do once installed, see [AICoreContract.Task] (empty before API 3). */
+    val tasks: List<String> = emptyList(),
 )
