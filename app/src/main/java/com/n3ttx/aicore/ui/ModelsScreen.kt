@@ -437,7 +437,7 @@ private fun AddModelDialog(g: AppGraph, onDismiss: () -> Unit, onMessage: (Strin
 }
 
 private val BUILT_IN_TEMPLATES = listOf(
-    "", "chatml", "llama3", "gemma", "phi4", "mistral-v7", "deepseek3", "granite", "command-r", "zephyr", "vicuna",
+    "", "chatml", "llama3", "gemma", "gemma4", "phi4", "mistral-v7", "deepseek3", "granite", "command-r", "zephyr", "vicuna",
 )
 
 @Composable

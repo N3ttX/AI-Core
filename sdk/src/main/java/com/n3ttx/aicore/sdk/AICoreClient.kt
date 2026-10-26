@@ -433,6 +433,7 @@ class AICoreClient(context: Context) : Closeable {
                 installed = it.getBoolean(Key.INSTALLED),
                 downloading = it.getBoolean(Key.DOWNLOADING),
                 config = it.getString(Key.CONFIG),
+                tasks = it.getStringArray(Key.TASKS)?.toList().orEmpty(),
             )
         }
     }

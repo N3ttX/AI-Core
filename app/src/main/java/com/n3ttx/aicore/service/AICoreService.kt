@@ -12,6 +12,7 @@ import com.n3ttx.aicore.AppGraph
 import com.n3ttx.aicore.BuildConfig
 import com.n3ttx.aicore.data.ModelRequest
 import com.n3ttx.aicore.data.ModelSpec
+import com.n3ttx.aicore.data.ModelStore
 import com.n3ttx.aicore.engine.EngineException
 import com.n3ttx.aicore.engine.Grammars
 import com.n3ttx.aicore.engine.LlamaModel
@@ -83,9 +84,12 @@ class AICoreService : Service() {
     private fun resolveModel(id: String?, type: String): ModelSpec? =
         if (id.isNullOrBlank()) g.defaultModel(type) else g.store.get(id)
 
-    private fun tasksOf(spec: ModelSpec): List<String> = when (spec.type) {
+    private fun tasksOf(spec: ModelSpec): List<String> = tasksOf(spec.type, vision = g.store.projectorOf(spec) != null)
+
+    /** [vision]: a llama.cpp model with a vision projector, which can see images in chat messages. */
+    private fun tasksOf(type: String, vision: Boolean): List<String> = when (type) {
         ModelType.CHAT -> listOf(Task.CHAT, Task.COMPLETION, Task.JSON_MODE, Task.GRAMMAR, Task.TOKENIZE) +
-            listOfNotNull(Task.VISION.takeIf { g.store.projectorOf(spec) != null })
+            listOfNotNull(Task.VISION.takeIf { vision })
         ModelType.EMBEDDING -> listOf(Task.TEXT_EMBEDDING, Task.TOKENIZE)
         ModelType.IMAGE_TEXT -> listOf(Task.IMAGE_EMBEDDING, Task.MULTIMODAL_TEXT_EMBEDDING, Task.TOKENIZE, Task.ONNX_INFERENCE)
         ModelType.FACE -> listOf(Task.FACE_DETECTION, Task.FACE_EMBEDDING, Task.ONNX_INFERENCE)
@@ -124,7 +128,9 @@ class AICoreService : Service() {
                 if (images == 0) content else List(images) { LlamaModel.MEDIA_MARKER }.joinToString("\n") + "\n" + content
         }
         require(messages.isNotEmpty()) { "Request needs messages or a prompt" }
-        return model.applyChatTemplate(messages, spec.chatTemplate) + spec.assistantPrefix.orEmpty()
+        // Models installed before their catalog entry got a template override (Gemma 4) use the catalog's.
+        val template = spec.chatTemplate ?: g.catalog.find(spec.id)?.chatTemplate
+        return model.applyChatTemplate(messages, template) + spec.assistantPrefix.orEmpty()
     }
 
     private fun samplingOf(request: Bundle): SamplingParams {
@@ -628,6 +634,8 @@ class AICoreService : Service() {
                         putBoolean(Key.INSTALLED, g.store.get(e.id) != null)
                         putBoolean(Key.DOWNLOADING, e.id in downloading)
                         e.config?.let { putString(Key.CONFIG, it) }
+                        val vision = e.engine == AICoreContract.Engine.LLAMA && e.files.any { it.role == ModelStore.ROLE_PROJECTOR }
+                        putStringArray(Key.TASKS, tasksOf(e.type, vision).toTypedArray())
                     }
                 }))
             }

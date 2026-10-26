@@ -43,7 +43,9 @@ Vectors are L2-normalized; compare them with a dot product / cosine similarity.
 
 Vision language models read and understand images: text on tickets, receipts and signs, or a
 description of a photo. They are chat models whose `tasks` contain `AICoreContract.Task.VISION`;
-the catalog has `qwen3.5-2b-vision-q4km` (Qwen3.5 2B with its vision projector, about 2 GB).
+`catalog()` reports the tasks of each catalog model, so `tasks` containing `VISION` lists all of them:
+Qwen3.5 0.8B / 2B / 4B Vision and Gemma 4 E2B / E4B Vision (`qwen3.5-2b-vision-q4km`, about 2 GB,
+is a good default).
 Attach images to a message; they are shown to the model before the message's text:
 
 ```kotlin

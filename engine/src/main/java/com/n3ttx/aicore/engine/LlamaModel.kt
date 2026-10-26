@@ -93,6 +93,7 @@ class LlamaModel private constructor(private var handle: Long, val options: Load
         templateOverride: String? = null,
         addAssistant: Boolean = true,
     ): String = lock.withLock {
+        if (templateOverride == GEMMA4) return@withLock gemma4(messages, addAssistant)
         val roles = messages.map { it.first.toByteArray() }.toTypedArray()
         val contents = messages.map { it.second.toByteArray() }.toTypedArray()
         val bytes = LlamaNative.applyChatTemplate(checkOpen(), templateOverride?.takeIf { it.isNotBlank() }, roles, contents, addAssistant)
@@ -184,6 +185,22 @@ class LlamaModel private constructor(private var handle: Long, val options: Load
     }
 
     companion object {
+        /** Template name for Gemma 4, whose turn format llama.cpp's built-in templates do not know. */
+        const val GEMMA4 = "gemma4"
+
+        /**
+         * Gemma 4's chat format: "<|turn>role\n…<turn|>\n", the assistant is "model", system messages form one turn at the
+         * start. The BOS token is added when the prompt is tokenized.
+         */
+        fun gemma4(messages: List<Pair<String, String>>, addAssistant: Boolean): String = buildString {
+            val system = messages.filter { it.first == "system" || it.first == "developer" }.joinToString("\n\n") { it.second.trim() }
+            if (system.isNotEmpty()) append("<|turn>system\n").append(system).append("<turn|>\n")
+            messages.filter { it.first != "system" && it.first != "developer" }.forEach { (role, content) ->
+                append("<|turn>").append(if (role == "assistant") "model" else role).append('\n').append(content.trim()).append("<turn|>\n")
+            }
+            if (addAssistant) append("<|turn>model\n")
+        }
+
         /** Where an image goes in the prompt (llama.cpp's default media marker). */
         const val MEDIA_MARKER = "<__media__>"
 
