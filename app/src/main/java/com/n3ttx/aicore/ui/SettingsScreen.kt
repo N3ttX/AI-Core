@@ -49,7 +49,7 @@ fun SettingsScreen() {
             }
             RowDivider()
             SliderSetting("CPU threads", "${s.threads} of $cores", s.threads.toFloat(), 1f..cores.toFloat(), cores - 2) {
-                g.settings.update { st -> st.copy(threads = it.roundToInt()) }
+                g.settings.update { st -> st.copy(threads = it.roundToInt(), threadsCustom = true) }
             }
             RowDivider()
             SwitchSetting(
@@ -81,6 +81,14 @@ fun SettingsScreen() {
             SwitchSetting("Hide reasoning", "Removes <think>…</think> blocks of reasoning models from the output.", s.hideThinking) { v ->
                 g.settings.update { it.copy(hideThinking = v) }
             }
+        }
+
+        SectionCard("Debug") {
+            SwitchSetting(
+                "Live notification",
+                "Shows which models are loaded and what they are doing for which app, updated live.",
+                s.debugNotification,
+            ) { v -> g.settings.update { it.copy(debugNotification = v) } }
         }
 
         SectionCard("Catalog") {
