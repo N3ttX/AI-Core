@@ -45,4 +45,23 @@ internal object LlamaNative {
     ): Int
 
     external fun embed(handle: Long, text: ByteArray, normalize: Boolean): FloatArray?
+
+    external fun loadProjector(handle: Long, path: String): Boolean
+
+    external fun generateWithImages(
+        handle: Long,
+        prompt: ByteArray,
+        images: Array<ByteArray>,
+        dims: IntArray,
+        maxTokens: Int,
+        temperature: Float,
+        topK: Int,
+        topP: Float,
+        minP: Float,
+        repeatPenalty: Float,
+        seed: Int,
+        grammar: String?,
+        sink: TokenSink,
+        stats: IntArray,
+    ): Int
 }

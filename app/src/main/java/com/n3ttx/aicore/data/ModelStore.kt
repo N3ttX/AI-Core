@@ -16,7 +16,10 @@ import java.util.Locale
 
 /** One file of a multi-file model package (e.g. an ONNX tower or a tokenizer). */
 data class ModelFile(
-    /** What the file is for: "vision", "text", "tokenizer", "detection", "recognition", "model", or "data". */
+    /**
+     * What the file is for: "vision", "text", "tokenizer", "detection", "recognition", "model", or "data"; in a llama.cpp
+     * package "model" (the GGUF) and "projector" (the mmproj GGUF that lets a vision language model see images).
+     */
     val role: String,
     /** Path inside the Hugging Face repo, or a full https URL. */
     val path: String,
@@ -175,6 +178,14 @@ class ModelStore(private val context: Context) {
 
     fun fileOf(spec: ModelSpec, file: ModelFile): File = File(dirOf(spec), file.localName)
 
+    /** The GGUF file of a llama.cpp model: the file itself, or the "model" file of a package (vision models). */
+    fun ggufOf(spec: ModelSpec): File =
+        if (spec.isPackage) componentFiles(spec)[ROLE_MODEL] ?: error("${spec.name} has no model file") else fileOf(spec)
+
+    /** The vision projector of a llama.cpp package, or null if the model cannot see images. */
+    fun projectorOf(spec: ModelSpec): File? =
+        if (spec.engine == AICoreContract.Engine.LLAMA && spec.isPackage) componentFiles(spec)[ROLE_PROJECTOR] else null
+
     /** Role to file on disk, for ONNX packages. */
     fun componentFiles(spec: ModelSpec): Map<String, File> = spec.files.associate { it.role to fileOf(spec, it) }
 
@@ -260,6 +271,9 @@ class ModelStore(private val context: Context) {
     }
 
     companion object {
+        const val ROLE_MODEL = "model"
+        const val ROLE_PROJECTOR = "projector"
+
         fun isGguf(file: File): Boolean = runCatching {
             file.inputStream().use { s ->
                 val magic = ByteArray(4)

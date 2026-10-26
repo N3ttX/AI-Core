@@ -2,7 +2,7 @@ package com.n3ttx.aicore.sdk
 
 /** Constants shared by AI Core Hub and its clients. Changing a value breaks compatibility. */
 object AICoreContract {
-    const val API_VERSION = 2
+    const val API_VERSION = 3
 
     const val SERVICE_PACKAGE = "com.n3ttx.aicore"
     const val ACTION_BIND = "com.n3ttx.aicore.action.BIND"
@@ -42,6 +42,8 @@ object AICoreContract {
         const val FACE_EMBEDDING = "face_embedding"
         const val ONNX_INFERENCE = "onnx_inference"
         const val TOKENIZE = "tokenize"
+        /** Chat with images in the messages (vision language models, API 3). */
+        const val VISION = "vision"
     }
 
     object DType {

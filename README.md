@@ -7,6 +7,8 @@ it in memory once and shares it between all connected apps.
 
 - **Text generation** (chat or raw prompt, streaming, JSON mode, GBNF grammars)
   and **text embeddings** with [llama.cpp](https://github.com/ggml-org/llama.cpp) (GGUF).
+- **Vision chat**: vision language models (e.g. Qwen3.5 2B Vision) read text in photos and
+  answer about images, with llama.cpp's multimodal library (mtmd).
 - **Image search** (CLIP, MobileCLIP, SigLIP 2 image + text embeddings), **face detection and
   recognition** (InsightFace SCRFD + ArcFace) and **any ONNX model** with raw tensors, with
   [ONNX Runtime](https://onnxruntime.ai).

@@ -3,6 +3,7 @@ package com.n3ttx.aicore.data
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import com.n3ttx.aicore.sdk.AICoreContract
 import com.n3ttx.aicore.service.DownloadService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -130,6 +131,10 @@ class DownloadController(private val context: Context, private val store: ModelS
                     val part = File(dir, file.localName + ".part")
                     download(spec.id, file.url(spec.repo), part, before, total)
                     if (spec.id in cancelled) return
+                    if (spec.engine == AICoreContract.Engine.LLAMA && !ModelStore.isGguf(part)) {
+                        part.delete()
+                        throw IOException("${file.localName} is not a GGUF file")
+                    }
                     if (!part.renameTo(target)) throw IOException("Could not move ${file.localName} into place")
                 }
                 before += target.length()

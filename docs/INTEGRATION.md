@@ -16,6 +16,7 @@ val caps = core.capabilities()           // apiVersion, tasks, engines
 | Task | Call | Model type |
 |---|---|---|
 | Chat / completion (streaming, JSON mode, GBNF) | `generate`, `complete` | `chat` (GGUF) |
+| Chat with images: read text in photos, describe them (API 3) | `generate` with `ChatMessage.user(text, images)` | `chat` with the `vision` task |
 | Text embeddings | `embed(texts)` | `embedding` (GGUF) |
 | Image embeddings | `embedImages(images)` | `image_text` (CLIP, SigLIP; ONNX) |
 | Text embeddings for image search | `embed(texts, type = IMAGE_TEXT)` | `image_text` |
@@ -37,6 +38,27 @@ analysed image (`Face.box`, with `FaceResult.width/height`) and normalized to 0.
 (`Face.boxNormalized`), which maps directly onto your own image.
 
 Vectors are L2-normalized; compare them with a dot product / cosine similarity.
+
+### Images in a chat (API 3)
+
+Vision language models read and understand images: text on tickets, receipts and signs, or a
+description of a photo. They are chat models whose `tasks` contain `AICoreContract.Task.VISION`;
+the catalog has `qwen3.5-2b-vision-q4km` (Qwen3.5 2B with its vision projector, about 2 GB).
+Attach images to a message; they are shown to the model before the message's text:
+
+```kotlin
+val result = core.complete(GenerationRequest(
+    messages = listOf(ChatMessage.user("What is the date on this ticket?", listOf(ImageInput.of(context, uri)))),
+    model = "qwen3.5-2b-vision-q4km",
+    options = GenerationOptions(temperature = 0f, grammar = myGbnf),
+    maxImageDimension = 1280,   // default; larger reads smaller print but takes longer
+))
+```
+
+At most 8 images per request. A request with images does not reuse the prompt cache. Models
+without a vision projector answer `INVALID_REQUEST`. For forms, a GBNF grammar with fixed keys
+works far better with small models than free JSON; ask the model to copy dates as printed and
+convert them in your app.
 
 ## Access
 
@@ -69,7 +91,8 @@ For a model outside the catalog, pass a package in the same JSON format as
 ```
 
 Roles used by the built-in tasks: `vision`, `text`, `tokenizer` (image-text), `detection`,
-`recognition` (faces). ONNX external data files (`*.onnx_data`) are listed as extra files with
+`recognition` (faces). A llama.cpp vision model is a package with `"engine": "llama"` and the
+roles `model` (the GGUF) and `projector` (its `mmproj` GGUF). ONNX external data files (`*.onnx_data`) are listed as extra files with
 any role and keep their original name.
 
 ## Lumen gallery

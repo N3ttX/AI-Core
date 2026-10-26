@@ -31,6 +31,13 @@ data class SamplingParams(
 
 enum class StopReason { EOS, LENGTH, STOPPED, CANCELLED }
 
+/** An image for a vision language model: [rgb] holds width * height * 3 bytes, row by row. */
+class RgbImage(val width: Int, val height: Int, val rgb: ByteArray) {
+    init {
+        require(rgb.size == width * height * 3) { "RGB data does not match ${width}x$height" }
+    }
+}
+
 data class GenerationStats(
     val stopReason: StopReason,
     val promptTokens: Int,
@@ -101,7 +108,14 @@ class LlamaModel private constructor(private var handle: Long, val options: Load
      * Generates a completion for [prompt]. [onText] receives decoded text chunks and
      * returns false to stop early.
      */
-    fun generate(prompt: String, params: SamplingParams, onText: (String) -> Boolean): GenerationStats = lock.withLock {
+    fun generate(prompt: String, params: SamplingParams, onText: (String) -> Boolean): GenerationStats =
+        generate(prompt, emptyList(), params, onText)
+
+    /**
+     * Like [generate], with [images] for a vision language model: the prompt contains [MEDIA_MARKER] once per image, in
+     * order. Needs [loadProjector] first.
+     */
+    fun generate(prompt: String, images: List<RgbImage>, params: SamplingParams, onText: (String) -> Boolean): GenerationStats = lock.withLock {
         val decoder = StreamingUtf8Decoder()
         val sink = object : TokenSink {
             override fun onPiece(bytes: ByteArray): Boolean {
@@ -110,10 +124,20 @@ class LlamaModel private constructor(private var handle: Long, val options: Load
             }
         }
         val stats = IntArray(3)
-        val rc = LlamaNative.generate(
-            checkOpen(), prompt.toByteArray(), params.maxTokens, params.temperature, params.topK, params.topP,
-            params.minP, params.repeatPenalty, params.seed, params.grammar, sink, stats,
-        )
+        val rc = if (images.isEmpty()) {
+            LlamaNative.generate(
+                checkOpen(), prompt.toByteArray(), params.maxTokens, params.temperature, params.topK, params.topP,
+                params.minP, params.repeatPenalty, params.seed, params.grammar, sink, stats,
+            )
+        } else {
+            check(hasProjector) { "No vision projector loaded" }
+            LlamaNative.generateWithImages(
+                checkOpen(), prompt.toByteArray(), images.map { it.rgb }.toTypedArray(),
+                IntArray(images.size * 2) { i -> if (i % 2 == 0) images[i / 2].width else images[i / 2].height },
+                params.maxTokens, params.temperature, params.topK, params.topP,
+                params.minP, params.repeatPenalty, params.seed, params.grammar, sink, stats,
+            )
+        }
         val reason = when (rc) {
             LlamaNative.STOP_EOS -> StopReason.EOS
             LlamaNative.STOP_LENGTH -> StopReason.LENGTH
@@ -129,6 +153,18 @@ class LlamaModel private constructor(private var handle: Long, val options: Load
     fun embed(text: String, normalize: Boolean = true): FloatArray = lock.withLock {
         LlamaNative.embed(checkOpen(), text.toByteArray(), normalize)
             ?: throw EngineException(EngineException.Kind.FAILED, LlamaNative.lastError())
+    }
+
+    /** True once the vision projector is loaded. */
+    @Volatile
+    var hasProjector: Boolean = false
+        private set
+
+    /** Loads the vision projector (mmproj GGUF) that lets the model see images. Does nothing if it is loaded. */
+    fun loadProjector(path: String) = lock.withLock {
+        if (hasProjector) return@withLock
+        if (!LlamaNative.loadProjector(checkOpen(), path)) throw EngineException(EngineException.Kind.LOAD_FAILED, LlamaNative.lastError())
+        hasProjector = true
     }
 
     /** Aborts the running generation or prompt evaluation, if any. */
@@ -148,6 +184,9 @@ class LlamaModel private constructor(private var handle: Long, val options: Load
     }
 
     companion object {
+        /** Where an image goes in the prompt (llama.cpp's default media marker). */
+        const val MEDIA_MARKER = "<__media__>"
+
         fun load(path: String, options: LoadOptions): LlamaModel {
             val handle = LlamaNative.loadModel(path, options.contextLength, options.batchSize, options.threads, options.embeddings)
             if (handle == 0L) throw EngineException(EngineException.Kind.LOAD_FAILED, LlamaNative.lastError())
