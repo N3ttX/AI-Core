@@ -43,6 +43,8 @@ data class GenerationRequest(
     val options: GenerationOptions = GenerationOptions(),
     /** Longest side the images of the messages are scaled to; 0 uses AI Core Hub's default (1280). */
     val maxImageDimension: Int = 0,
+    /** A batch job: interactive requests of any app go first. */
+    val background: Boolean = false,
 ) {
     fun toBundle(): Bundle = Bundle().apply {
         model?.let { putString(Key.MODEL, it) }
@@ -67,6 +69,7 @@ data class GenerationRequest(
         putBoolean(Key.JSON_MODE, options.jsonMode)
         options.grammar?.let { putString(Key.GRAMMAR, it) }
         if (maxImageDimension > 0) putInt(Key.MAX_DIMENSION, maxImageDimension)
+        if (background) putBoolean(Key.BACKGROUND, true)
     }
 }
 
