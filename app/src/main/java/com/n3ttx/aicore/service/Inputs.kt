@@ -66,6 +66,21 @@ sealed class ImageSource : AutoCloseable {
     }
 }
 
+/** RGB bytes of the bitmap for a vision language model (alpha is dropped). */
+fun Bitmap.toRgbImage(): com.n3ttx.aicore.engine.RgbImage {
+    val soft = if (config == Bitmap.Config.HARDWARE) copy(Bitmap.Config.ARGB_8888, false) else this
+    val pixels = IntArray(soft.width * soft.height)
+    soft.getPixels(pixels, 0, soft.width, 0, 0, soft.width, soft.height)
+    val rgb = ByteArray(pixels.size * 3)
+    for (i in pixels.indices) {
+        val p = pixels[i]
+        rgb[i * 3] = (p shr 16).toByte()
+        rgb[i * 3 + 1] = (p shr 8).toByte()
+        rgb[i * 3 + 2] = p.toByte()
+    }
+    return com.n3ttx.aicore.engine.RgbImage(soft.width, soft.height, rgb)
+}
+
 /** Conversion between SDK tensors (little-endian bytes) and ONNX Runtime tensors. */
 object Tensors {
     private fun javaType(dtype: String): OnnxJavaType = when (dtype) {

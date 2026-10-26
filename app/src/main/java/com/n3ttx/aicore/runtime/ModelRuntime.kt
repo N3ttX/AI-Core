@@ -173,7 +173,7 @@ class ModelRuntime(
         val engine: Closeable = if (options is OnnxOptions) {
             OnnxModel(store.componentFiles(spec), options)
         } else {
-            LlamaModel.load(store.fileOf(spec).absolutePath, options as LoadOptions)
+            LlamaModel.load(store.ggufOf(spec).absolutePath, options as LoadOptions)
         }
         val now = System.currentTimeMillis()
         val l = Loaded(spec, engine, options, now, now, store.sizeOnDisk(spec))

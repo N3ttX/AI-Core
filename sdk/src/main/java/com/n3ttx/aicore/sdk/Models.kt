@@ -3,10 +3,14 @@ package com.n3ttx.aicore.sdk
 import android.os.Bundle
 import com.n3ttx.aicore.sdk.AICoreContract.Key
 
-data class ChatMessage(val role: String, val content: String) {
+/**
+ * One message of a chat. [images] need a model with the [AICoreContract.Task.VISION] task (API 3); they are shown to the
+ * model before the text of the message.
+ */
+data class ChatMessage(val role: String, val content: String, val images: List<ImageInput> = emptyList()) {
     companion object {
         fun system(content: String) = ChatMessage("system", content)
-        fun user(content: String) = ChatMessage("user", content)
+        fun user(content: String, images: List<ImageInput> = emptyList()) = ChatMessage("user", content, images)
         fun assistant(content: String) = ChatMessage("assistant", content)
     }
 }
@@ -37,6 +41,8 @@ data class GenerationRequest(
     /** Model id; null uses the user's default chat model. */
     val model: String? = null,
     val options: GenerationOptions = GenerationOptions(),
+    /** Longest side the images of the messages are scaled to; 0 uses AI Core Hub's default (1280). */
+    val maxImageDimension: Int = 0,
 ) {
     fun toBundle(): Bundle = Bundle().apply {
         model?.let { putString(Key.MODEL, it) }
@@ -46,6 +52,7 @@ data class GenerationRequest(
                 Bundle().apply {
                     putString(Key.ROLE, it.role)
                     putString(Key.CONTENT, it.content)
+                    if (it.images.isNotEmpty()) putParcelableArrayList(Key.IMAGES, ArrayList(it.images.map { image -> image.toBundle() }))
                 }
             }))
         }
@@ -59,6 +66,7 @@ data class GenerationRequest(
         if (options.stop.isNotEmpty()) putStringArray(Key.STOP, options.stop.toTypedArray())
         putBoolean(Key.JSON_MODE, options.jsonMode)
         options.grammar?.let { putString(Key.GRAMMAR, it) }
+        if (maxImageDimension > 0) putInt(Key.MAX_DIMENSION, maxImageDimension)
     }
 }
 

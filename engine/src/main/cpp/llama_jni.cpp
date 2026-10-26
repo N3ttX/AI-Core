@@ -15,6 +15,8 @@
 #include <vector>
 
 #include "llama.h"
+#include "mtmd.h"
+#include "mtmd-helper.h"
 
 #define TAG "AICoreEngine"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -37,6 +39,9 @@ struct Engine {
     llama_context *ctx = nullptr;
     const llama_vocab *vocab = nullptr;
     bool embeddings = false;
+    int32_t n_threads = 4;
+    // Vision projector (mmproj) of a vision language model, loaded on demand by loadProjector.
+    mtmd_context *mtmd = nullptr;
     // Tokens currently held in the KV cache for sequence 0, used for prefix reuse.
     std::vector<llama_token> cached;
     std::atomic<bool> cancel{false};
@@ -122,6 +127,94 @@ int decode_tokens(Engine *e, const std::vector<llama_token> &tokens, size_t from
     return rc;
 }
 
+// Builds the sampler chain of a request. Returns nullptr (and sets g_last_error) for an invalid grammar.
+llama_sampler *make_sampler(JNIEnv *env, Engine *e, jfloat temperature, jint top_k, jfloat top_p, jfloat min_p,
+                            jfloat repeat_penalty, jint seed, jstring jgrammar) {
+    llama_sampler *smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    if (jgrammar != nullptr) {
+        const char *g = env->GetStringUTFChars(jgrammar, nullptr);
+        llama_sampler *gs = llama_sampler_init_grammar(e->vocab, g, "root");
+        env->ReleaseStringUTFChars(jgrammar, g);
+        if (gs == nullptr) {
+            llama_sampler_free(smpl);
+            g_last_error = "Invalid grammar";
+            return nullptr;
+        }
+        llama_sampler_chain_add(smpl, gs);
+    }
+    if (repeat_penalty > 0.0f && repeat_penalty != 1.0f) {
+        llama_sampler_chain_add(smpl, llama_sampler_init_penalties(llama_vocab_n_tokens(e->vocab), 64, repeat_penalty, 0.0f, 0.0f));
+    }
+    if (temperature <= 0.0f) {
+        llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
+    } else {
+        if (top_k > 0) llama_sampler_chain_add(smpl, llama_sampler_init_top_k(top_k));
+        if (top_p > 0.0f && top_p < 1.0f) llama_sampler_chain_add(smpl, llama_sampler_init_top_p(top_p, 1));
+        if (min_p > 0.0f) llama_sampler_chain_add(smpl, llama_sampler_init_min_p(min_p, 1));
+        llama_sampler_chain_add(smpl, llama_sampler_init_temp(temperature));
+        llama_sampler_chain_add(smpl,
+                                llama_sampler_init_dist(seed < 0 ? LLAMA_DEFAULT_SEED : static_cast<uint32_t>(seed)));
+    }
+    return smpl;
+}
+
+void clear_memory(Engine *e);
+
+// Samples up to [limit] tokens after the prompt, which ends at position [pos], and streams them to the sink.
+// With [track_cache] the generated tokens are appended to e->cached (text prompts, for prefix reuse).
+int sample_loop(JNIEnv *env, Engine *e, jobject sink, jmethodID on_piece, llama_sampler *smpl, int32_t limit,
+                llama_pos pos, bool track_cache, int &generated) {
+    int result = STOP_LENGTH;
+    llama_batch batch = llama_batch_init(1, 0, 1);
+    while (generated < limit) {
+        if (e->cancel.load()) {
+            result = STOP_CANCELLED;
+            break;
+        }
+        const llama_token tok = llama_sampler_sample(smpl, e->ctx, -1);
+        if (llama_vocab_is_eog(e->vocab, tok)) {
+            result = STOP_EOS;
+            break;
+        }
+        ++generated;
+
+        const std::string piece = token_piece(e->vocab, tok);
+        if (!piece.empty()) {
+            jbyteArray arr = to_bytes(env, piece);
+            const jboolean keep_going = env->CallBooleanMethod(sink, on_piece, arr);
+            env->DeleteLocalRef(arr);
+            if (env->ExceptionCheck()) {
+                env->ExceptionClear();
+                result = STOP_SINK;
+                break;
+            }
+            if (!keep_going) {
+                result = STOP_SINK;
+                // The token is not decoded, so the cache stays consistent with e->cached.
+                break;
+            }
+        }
+
+        batch.n_tokens = 1;
+        batch.token[0] = tok;
+        batch.pos[0] = pos;
+        batch.n_seq_id[0] = 1;
+        batch.seq_id[0][0] = 0;
+        batch.logits[0] = 1;
+        const int rc = llama_decode(e->ctx, batch);
+        if (rc != 0) {
+            result = (rc == 2) ? STOP_CANCELLED : ERR_GENERIC;
+            if (result == ERR_GENERIC) g_last_error = "llama_decode failed: " + std::to_string(rc);
+            clear_memory(e);
+            break;
+        }
+        ++pos;
+        if (track_cache) e->cached.push_back(tok);
+    }
+    llama_batch_free(batch);
+    return result;
+}
+
 void clear_memory(Engine *e) {
     llama_memory_t mem = llama_get_memory(e->ctx);
     if (mem != nullptr) llama_memory_clear(mem, true);
@@ -135,6 +228,7 @@ extern "C" {
 JNIEXPORT void JNICALL
 Java_com_n3ttx_aicore_engine_LlamaNative_backendInit(JNIEnv *, jobject) {
     llama_log_set(log_cb, nullptr);
+    mtmd_helper_log_set(log_cb, nullptr);
     llama_backend_init();
 }
 
@@ -161,6 +255,7 @@ Java_com_n3ttx_aicore_engine_LlamaNative_loadModel(JNIEnv *env, jobject, jstring
     e->model = model;
     e->vocab = llama_model_get_vocab(model);
     e->embeddings = embeddings;
+    e->n_threads = n_threads;
 
     llama_context_params cparams = llama_context_default_params();
     const int32_t n_ctx_train = llama_model_n_ctx_train(model);
@@ -195,6 +290,7 @@ JNIEXPORT void JNICALL
 Java_com_n3ttx_aicore_engine_LlamaNative_free(JNIEnv *, jobject, jlong handle) {
     Engine *e = as_engine(handle);
     if (e == nullptr) return;
+    if (e->mtmd != nullptr) mtmd_free(e->mtmd);
     if (e->ctx != nullptr) llama_free(e->ctx);
     if (e->model != nullptr) llama_model_free(e->model);
     delete e;
@@ -340,88 +436,147 @@ Java_com_n3ttx_aicore_engine_LlamaNative_generate(JNIEnv *env, jobject, jlong ha
     }
     e->cached = tokens;
 
-    // Sampler chain.
-    llama_sampler *smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
-    if (jgrammar != nullptr) {
-        const char *g = env->GetStringUTFChars(jgrammar, nullptr);
-        llama_sampler *gs = llama_sampler_init_grammar(e->vocab, g, "root");
-        env->ReleaseStringUTFChars(jgrammar, g);
-        if (gs == nullptr) {
-            llama_sampler_free(smpl);
-            g_last_error = "Invalid grammar";
-            return ERR_GENERIC;
-        }
-        llama_sampler_chain_add(smpl, gs);
-    }
-    if (repeat_penalty > 0.0f && repeat_penalty != 1.0f) {
-        llama_sampler_chain_add(smpl, llama_sampler_init_penalties(llama_vocab_n_tokens(e->vocab), 64, repeat_penalty, 0.0f, 0.0f));
-    }
-    if (temperature <= 0.0f) {
-        llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
-    } else {
-        if (top_k > 0) llama_sampler_chain_add(smpl, llama_sampler_init_top_k(top_k));
-        if (top_p > 0.0f && top_p < 1.0f) llama_sampler_chain_add(smpl, llama_sampler_init_top_p(top_p, 1));
-        if (min_p > 0.0f) llama_sampler_chain_add(smpl, llama_sampler_init_min_p(min_p, 1));
-        llama_sampler_chain_add(smpl, llama_sampler_init_temp(temperature));
-        llama_sampler_chain_add(smpl,
-                                llama_sampler_init_dist(seed < 0 ? LLAMA_DEFAULT_SEED : static_cast<uint32_t>(seed)));
-    }
+    llama_sampler *smpl = make_sampler(env, e, temperature, top_k, top_p, min_p, repeat_penalty, seed, jgrammar);
+    if (smpl == nullptr) return ERR_GENERIC;
 
     const int32_t room = n_ctx - static_cast<int32_t>(tokens.size());
     const int32_t limit = max_tokens > 0 ? std::min<int32_t>(max_tokens, room) : room;
-    int result = STOP_LENGTH;
     int generated = 0;
-    llama_batch batch = llama_batch_init(1, 0, 1);
-
-    while (generated < limit) {
-        if (e->cancel.load()) {
-            result = STOP_CANCELLED;
-            break;
-        }
-        const llama_token tok = llama_sampler_sample(smpl, e->ctx, -1);
-        if (llama_vocab_is_eog(e->vocab, tok)) {
-            result = STOP_EOS;
-            break;
-        }
-        ++generated;
-
-        const std::string piece = token_piece(e->vocab, tok);
-        if (!piece.empty()) {
-            jbyteArray arr = to_bytes(env, piece);
-            const jboolean keep_going = env->CallBooleanMethod(sink, on_piece, arr);
-            env->DeleteLocalRef(arr);
-            if (env->ExceptionCheck()) {
-                env->ExceptionClear();
-                result = STOP_SINK;
-                break;
-            }
-            if (!keep_going) {
-                result = STOP_SINK;
-                // The token is not decoded, so the cache stays consistent with e->cached.
-                break;
-            }
-        }
-
-        batch.n_tokens = 1;
-        batch.token[0] = tok;
-        batch.pos[0] = static_cast<llama_pos>(e->cached.size());
-        batch.n_seq_id[0] = 1;
-        batch.seq_id[0][0] = 0;
-        batch.logits[0] = 1;
-        rc = llama_decode(e->ctx, batch);
-        if (rc != 0) {
-            result = (rc == 2) ? STOP_CANCELLED : ERR_GENERIC;
-            if (result == ERR_GENERIC) g_last_error = "llama_decode failed: " + std::to_string(rc);
-            clear_memory(e);
-            break;
-        }
-        e->cached.push_back(tok);
-    }
-
-    llama_batch_free(batch);
+    const int result = sample_loop(env, e, sink, on_piece, smpl, limit, static_cast<llama_pos>(e->cached.size()), true, generated);
     llama_sampler_free(smpl);
 
     jint stats[3] = {static_cast<jint>(tokens.size()), generated, cached_reused};
+    env->SetIntArrayRegion(jstats, 0, 3, stats);
+    return result;
+}
+
+// Loads the vision projector (mmproj GGUF) of the model. Returns false (see lastError) if it does not fit the model.
+JNIEXPORT jboolean JNICALL
+Java_com_n3ttx_aicore_engine_LlamaNative_loadProjector(JNIEnv *env, jobject, jlong handle, jstring jpath) {
+    Engine *e = as_engine(handle);
+    if (e->mtmd != nullptr) return JNI_TRUE;
+    const char *path = env->GetStringUTFChars(jpath, nullptr);
+    mtmd_context_params params = mtmd_context_params_default();
+    params.use_gpu = false;
+    params.print_timings = false;
+    params.warmup = false;
+    params.n_threads = e->n_threads;
+    params.media_marker = mtmd_default_marker();
+    e->mtmd = mtmd_init_from_file(path, e->model, params);
+    env->ReleaseStringUTFChars(jpath, path);
+    if (e->mtmd == nullptr) {
+        g_last_error = "Failed to load the vision projector";
+        return JNI_FALSE;
+    }
+    if (!mtmd_support_vision(e->mtmd)) {
+        mtmd_free(e->mtmd);
+        e->mtmd = nullptr;
+        g_last_error = "The projector does not support images";
+        return JNI_FALSE;
+    }
+    LOGI("Loaded vision projector");
+    return JNI_TRUE;
+}
+
+// Like generate, but the prompt contains one media marker per image. Images are RGB bytes (width * height * 3),
+// dims holds width and height of each. The KV cache is not reused across such requests.
+// stats (out): [prompt tokens, generated tokens, reused cached tokens]
+JNIEXPORT jint JNICALL
+Java_com_n3ttx_aicore_engine_LlamaNative_generateWithImages(JNIEnv *env, jobject, jlong handle, jbyteArray jprompt,
+                                                            jobjectArray jimages, jintArray jdims, jint max_tokens,
+                                                            jfloat temperature, jint top_k, jfloat top_p, jfloat min_p,
+                                                            jfloat repeat_penalty, jint seed, jstring jgrammar,
+                                                            jobject sink, jintArray jstats) {
+    Engine *e = as_engine(handle);
+    e->cancel.store(false);
+    if (e->mtmd == nullptr) {
+        g_last_error = "No vision projector loaded";
+        return ERR_GENERIC;
+    }
+    jclass sink_cls = env->GetObjectClass(sink);
+    jmethodID on_piece = env->GetMethodID(sink_cls, "onPiece", "([B)Z");
+    if (on_piece == nullptr) {
+        g_last_error = "TokenSink.onPiece not found";
+        return ERR_GENERIC;
+    }
+
+    const jsize n_images = env->GetArrayLength(jimages);
+    std::vector<jint> dims(static_cast<size_t>(n_images) * 2);
+    if (env->GetArrayLength(jdims) != n_images * 2) {
+        g_last_error = "Image sizes missing";
+        return ERR_GENERIC;
+    }
+    if (n_images > 0) env->GetIntArrayRegion(jdims, 0, n_images * 2, dims.data());
+    std::vector<mtmd_bitmap *> bitmaps;
+    for (jsize i = 0; i < n_images; ++i) {
+        auto arr = static_cast<jbyteArray>(env->GetObjectArrayElement(jimages, i));
+        const uint32_t w = static_cast<uint32_t>(dims[i * 2]);
+        const uint32_t h = static_cast<uint32_t>(dims[i * 2 + 1]);
+        const jsize len = env->GetArrayLength(arr);
+        if (static_cast<size_t>(len) != static_cast<size_t>(w) * h * 3) {
+            env->DeleteLocalRef(arr);
+            for (auto *b : bitmaps) mtmd_bitmap_free(b);
+            g_last_error = "Image " + std::to_string(i) + " has the wrong size";
+            return ERR_GENERIC;
+        }
+        jbyte *data = env->GetByteArrayElements(arr, nullptr);
+        bitmaps.push_back(mtmd_bitmap_init(w, h, reinterpret_cast<const unsigned char *>(data)));
+        env->ReleaseByteArrayElements(arr, data, JNI_ABORT);
+        env->DeleteLocalRef(arr);
+    }
+
+    const std::string prompt = to_string(env, jprompt);
+    mtmd_input_text text;
+    text.text = prompt.c_str();
+    text.text_len = prompt.size();
+    text.add_special = true;
+    text.parse_special = true;
+    mtmd_input_chunks *chunks = mtmd_input_chunks_init();
+    const int32_t trc = mtmd_tokenize(e->mtmd, chunks, &text, bitmaps.data(), bitmaps.size());
+    for (auto *b : bitmaps) mtmd_bitmap_free(b);
+    if (trc != 0) {
+        mtmd_input_chunks_free(chunks);
+        g_last_error = trc == 1 ? "Number of images does not match the media markers in the prompt" : "Image could not be prepared";
+        return ERR_GENERIC;
+    }
+
+    const int32_t n_ctx = static_cast<int32_t>(llama_n_ctx(e->ctx));
+    const auto n_prompt = static_cast<int32_t>(mtmd_helper_get_n_tokens(chunks));
+    if (n_prompt >= n_ctx - 4) {
+        mtmd_input_chunks_free(chunks);
+        g_last_error = "Prompt with images has " + std::to_string(n_prompt) + " tokens, context is " + std::to_string(n_ctx);
+        return ERR_CONTEXT_OVERFLOW;
+    }
+
+    clear_memory(e);
+    llama_pos n_past = 0;
+    const int32_t erc = mtmd_helper_eval_chunks(e->mtmd, e->ctx, chunks, 0, 0,
+                                                static_cast<int32_t>(llama_n_batch(e->ctx)), true, &n_past);
+    mtmd_input_chunks_free(chunks);
+    if (e->cancel.load()) {
+        clear_memory(e);
+        return STOP_CANCELLED;
+    }
+    if (erc != 0) {
+        clear_memory(e);
+        g_last_error = "Evaluating the prompt with images failed: " + std::to_string(erc);
+        return ERR_GENERIC;
+    }
+
+    llama_sampler *smpl = make_sampler(env, e, temperature, top_k, top_p, min_p, repeat_penalty, seed, jgrammar);
+    if (smpl == nullptr) {
+        clear_memory(e);
+        return ERR_GENERIC;
+    }
+    const int32_t room = n_ctx - n_prompt;
+    const int32_t limit = max_tokens > 0 ? std::min<int32_t>(max_tokens, room) : room;
+    int generated = 0;
+    const int result = sample_loop(env, e, sink, on_piece, smpl, limit, n_past, false, generated);
+    llama_sampler_free(smpl);
+    // The cache holds image embeddings that a text prompt cannot match: start the next request from scratch.
+    clear_memory(e);
+
+    jint stats[3] = {n_prompt, generated, 0};
     env->SetIntArrayRegion(jstats, 0, 3, stats);
     return result;
 }

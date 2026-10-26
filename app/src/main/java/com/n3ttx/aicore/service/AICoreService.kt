@@ -15,6 +15,7 @@ import com.n3ttx.aicore.data.ModelSpec
 import com.n3ttx.aicore.engine.EngineException
 import com.n3ttx.aicore.engine.Grammars
 import com.n3ttx.aicore.engine.LlamaModel
+import com.n3ttx.aicore.engine.RgbImage
 import com.n3ttx.aicore.engine.SamplingParams
 import com.n3ttx.aicore.engine.StopReason
 import com.n3ttx.aicore.graph
@@ -82,8 +83,9 @@ class AICoreService : Service() {
     private fun resolveModel(id: String?, type: String): ModelSpec? =
         if (id.isNullOrBlank()) g.defaultModel(type) else g.store.get(id)
 
-    private fun tasksOf(type: String): List<String> = when (type) {
-        ModelType.CHAT -> listOf(Task.CHAT, Task.COMPLETION, Task.JSON_MODE, Task.GRAMMAR, Task.TOKENIZE)
+    private fun tasksOf(spec: ModelSpec): List<String> = when (spec.type) {
+        ModelType.CHAT -> listOf(Task.CHAT, Task.COMPLETION, Task.JSON_MODE, Task.GRAMMAR, Task.TOKENIZE) +
+            listOfNotNull(Task.VISION.takeIf { g.store.projectorOf(spec) != null })
         ModelType.EMBEDDING -> listOf(Task.TEXT_EMBEDDING, Task.TOKENIZE)
         ModelType.IMAGE_TEXT -> listOf(Task.IMAGE_EMBEDDING, Task.MULTIMODAL_TEXT_EMBEDDING, Task.TOKENIZE, Task.ONNX_INFERENCE)
         ModelType.FACE -> listOf(Task.FACE_DETECTION, Task.FACE_EMBEDDING, Task.ONNX_INFERENCE)
@@ -95,7 +97,7 @@ class AICoreService : Service() {
         putString(Key.NAME, spec.name)
         putString(Key.TYPE, spec.type)
         putString(Key.ENGINE, spec.engine)
-        putStringArray(Key.TASKS, tasksOf(spec.type).toTypedArray())
+        putStringArray(Key.TASKS, tasksOf(spec).toTypedArray())
         spec.config?.let { putString(Key.CONFIG, it) }
         putStringArray(Key.COMPONENTS, spec.files.filter { it.localName.endsWith(".onnx") }.map { it.role }.toTypedArray())
         spec.description?.let { putString(Key.DESCRIPTION, it) }
@@ -108,12 +110,19 @@ class AICoreService : Service() {
         spec.documentPrefix?.let { putString(Key.DOCUMENT_PREFIX, it) }
     }
 
-    /** Builds the prompt for a generation request on [model]. */
-    private fun buildPrompt(request: Bundle, spec: ModelSpec, model: LlamaModel): String {
+    /**
+     * Builds the prompt for a generation request on [model]. [imageCounts] are the numbers of images of the messages: each
+     * image becomes a media marker at the start of its message.
+     */
+    private fun buildPrompt(request: Bundle, spec: ModelSpec, model: LlamaModel, imageCounts: List<Int> = emptyList()): String {
         request.getString(Key.PROMPT)?.let { return it }
         @Suppress("DEPRECATION")
-        val messages = request.getParcelableArrayList<Bundle>(Key.MESSAGES).orEmpty()
-            .map { it.getString(Key.ROLE).orEmpty() to it.getString(Key.CONTENT).orEmpty() }
+        val messages = request.getParcelableArrayList<Bundle>(Key.MESSAGES).orEmpty().mapIndexed { i, m ->
+            val images = imageCounts.getOrElse(i) { 0 }
+            val content = m.getString(Key.CONTENT).orEmpty()
+            m.getString(Key.ROLE).orEmpty() to
+                if (images == 0) content else List(images) { LlamaModel.MEDIA_MARKER }.joinToString("\n") + "\n" + content
+        }
         require(messages.isNotEmpty()) { "Request needs messages or a prompt" }
         return model.applyChatTemplate(messages, spec.chatTemplate) + spec.assistantPrefix.orEmpty()
     }
@@ -246,6 +255,28 @@ class AICoreService : Service() {
             val spec = resolveModel(request.getString(Key.MODEL), ModelType.CHAT)
                 ?: return error(Error.MODEL_NOT_INSTALLED, "Model is not installed: ${request.getString(Key.MODEL) ?: "no chat model"}")
             if (spec.type != ModelType.CHAT) return error(Error.INVALID_REQUEST, "${spec.name} is not a chat model")
+            // Images of the messages (API 3) are taken out while the binder call runs, see ImageSource.
+            @Suppress("DEPRECATION")
+            val messageImages = try {
+                request.getParcelableArrayList<Bundle>(Key.MESSAGES).orEmpty().map { ImageSource.listFrom(it) }
+            } catch (e: Exception) {
+                return error(Error.INVALID_REQUEST, e.message ?: "Invalid images")
+            }
+            val allImages = messageImages.flatten()
+            val projector = if (allImages.isEmpty()) null else g.store.projectorOf(spec)
+            if (allImages.isNotEmpty()) {
+                val problem = when {
+                    projector == null -> "${spec.name} cannot see images; use a vision model, e.g. Qwen3.5 2B Vision"
+                    request.getString(Key.PROMPT) != null -> "Images need messages, not a raw prompt"
+                    allImages.size > MAX_CHAT_IMAGES -> "At most $MAX_CHAT_IMAGES images per request"
+                    else -> null
+                }
+                if (problem != null) {
+                    allImages.forEach { it.close() }
+                    return error(Error.INVALID_REQUEST, problem)
+                }
+            }
+            val maxDim = request.getInt(Key.MAX_DIMENSION, 0).takeIf { it > 0 }?.coerceAtMost(4096) ?: DEFAULT_CHAT_IMAGE_DIMENSION
             val params = samplingOf(request)
             val stops = request.getStringArray(Key.STOP)?.toList().orEmpty()
             val requestId = g.runtime.newRequestId()
@@ -254,8 +285,12 @@ class AICoreService : Service() {
                 val started = System.currentTimeMillis()
                 try {
                     var clientGone = false
-                    val result = g.runtime.withModel(requestId, spec, caller.label, "generate") { model ->
-                        val prompt = buildPrompt(request, spec, model)
+                    val result = g.runtime.withModel(requestId, spec, caller.label, if (allImages.isEmpty()) "generate" else "see images") { model ->
+                        val images = if (projector == null) emptyList() else {
+                            model.loadProjector(projector.absolutePath)
+                            allImages.map { it.decode(maxDim).toRgbImage() }
+                        }
+                        val prompt = buildPrompt(request, spec, model, messageImages.map { it.size })
                         val filter = OutputFilter(stops, g.settings.current.hideThinking) { text ->
                             try {
                                 callback.onToken(requestId, text)
@@ -265,7 +300,7 @@ class AICoreService : Service() {
                                 false
                             }
                         }
-                        val stats = model.generate(prompt, params) { filter.push(it) }
+                        val stats = model.generate(prompt, images, params) { filter.push(it) }
                         filter.finish()
                         Triple(filter, stats, model)
                     }
@@ -294,6 +329,8 @@ class AICoreService : Service() {
                     if (e !is CancellationException) Log.w(TAG, "Generation $requestId failed", e)
                     runCatching { callback.onError(requestId, codeOf(e), e.message ?: e.javaClass.simpleName) }
                     if (e is CancellationException) throw e
+                } finally {
+                    allImages.forEach { it.close() }
                 }
             }
             return Bundle().apply { putString(Key.REQUEST_ID, requestId) }
@@ -565,6 +602,7 @@ class AICoreService : Service() {
                     arrayOf(
                         Task.CHAT, Task.COMPLETION, Task.JSON_MODE, Task.GRAMMAR, Task.TEXT_EMBEDDING, Task.IMAGE_EMBEDDING,
                         Task.MULTIMODAL_TEXT_EMBEDDING, Task.FACE_DETECTION, Task.FACE_EMBEDDING, Task.ONNX_INFERENCE, Task.TOKENIZE,
+                        Task.VISION,
                     ),
                 )
                 putStringArray(Key.ENGINES, arrayOf("llama.cpp b11852", "onnxruntime 1.30.0"))
@@ -629,5 +667,8 @@ class AICoreService : Service() {
         private const val TAG = "AICoreService"
         private const val MAX_EMBED_TEXTS = 4096
         private const val MAX_BATCH = 256
+        private const val MAX_CHAT_IMAGES = 8
+        /** Enough for small print on a ticket or receipt; vision models scale further down themselves if they need to. */
+        private const val DEFAULT_CHAT_IMAGE_DIMENSION = 1280
     }
 }
