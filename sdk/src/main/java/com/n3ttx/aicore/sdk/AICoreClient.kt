@@ -235,8 +235,11 @@ class AICoreClient(context: Context) : Closeable {
         model: String? = null,
         normalize: Boolean = true,
         type: String = AICoreContract.ModelType.EMBEDDING,
+        /** A batch job: interactive requests of any app go first. */
+        background: Boolean = false,
     ): EmbeddingResult {
         val request = Bundle().apply {
+            if (background) putBoolean(Key.BACKGROUND, true)
             putStringArray(Key.TEXTS, texts.toTypedArray())
             putBoolean(Key.NORMALIZE, normalize)
             putString(Key.TYPE, type)
@@ -249,8 +252,9 @@ class AICoreClient(context: Context) : Closeable {
      * Embeds images with an image-text model (null = default one). Vectors are L2-normalized and
      * comparable with text vectors from [embed] with the same model.
      */
-    suspend fun embedImages(images: List<ImageInput>, model: String? = null, maxDimension: Int = 0): EmbeddingResult {
+    suspend fun embedImages(images: List<ImageInput>, model: String? = null, maxDimension: Int = 0, background: Boolean = false): EmbeddingResult {
         val request = Bundle().apply {
+            if (background) putBoolean(Key.BACKGROUND, true)
             putParcelableArrayList(Key.IMAGES, ArrayList(images.map { it.toBundle() }))
             model?.let { putString(Key.MODEL, it) }
             if (maxDimension > 0) putInt(Key.MAX_DIMENSION, maxDimension)
@@ -324,8 +328,11 @@ class AICoreClient(context: Context) : Closeable {
         minFaceSize: Float = 20f,
         withEmbeddings: Boolean = true,
         maxDimension: Int = 0,
+        /** A batch job (scanning a gallery): interactive requests of any app go first. */
+        background: Boolean = false,
     ): List<FaceResult> {
         val request = Bundle().apply {
+            if (background) putBoolean(Key.BACKGROUND, true)
             putParcelableArrayList(Key.IMAGES, ArrayList(images.map { it.toBundle() }))
             model?.let { putString(Key.MODEL, it) }
             putFloat(Key.THRESHOLD, threshold)
@@ -340,8 +347,9 @@ class AICoreClient(context: Context) : Closeable {
      * Runs one [component] (e.g. "vision", "text", "model") of an installed ONNX model with raw
      * tensors. [outputs] null returns all outputs. Use this for models AI Core has no task for.
      */
-    suspend fun runModel(model: String, component: String, inputs: List<Tensor>, outputs: List<String>? = null): List<Tensor> {
+    suspend fun runModel(model: String, component: String, inputs: List<Tensor>, outputs: List<String>? = null, background: Boolean = false): List<Tensor> {
         val request = Bundle().apply {
+            if (background) putBoolean(Key.BACKGROUND, true)
             putString(Key.MODEL, model)
             putString(Key.COMPONENT, component)
             putParcelableArrayList(Key.INPUTS, ArrayList(inputs.map { it.toBundle() }))

@@ -20,6 +20,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -115,14 +116,37 @@ class ModelRuntime(
     /**
      * Runs [block] with [spec] loaded, on the inference thread.
      */
-    suspend fun <T> withModel(requestId: String, spec: ModelSpec, clientLabel: String, kind: String, block: (LlamaModel) -> T): T =
-        withEngine(requestId, spec, clientLabel, kind) { block(it as LlamaModel) }
+    suspend fun <T> withModel(
+        requestId: String, spec: ModelSpec, clientLabel: String, kind: String, background: Boolean = false, block: (LlamaModel) -> T,
+    ): T = withEngine(requestId, spec, clientLabel, kind, background) { block(it as LlamaModel) }
 
     /** Runs [block] with the ONNX package [spec] loaded, on the inference thread. */
-    suspend fun <T> withOnnx(requestId: String, spec: ModelSpec, clientLabel: String, kind: String, block: (OnnxModel) -> T): T =
-        withEngine(requestId, spec, clientLabel, kind) { block(it as OnnxModel) }
+    suspend fun <T> withOnnx(
+        requestId: String, spec: ModelSpec, clientLabel: String, kind: String, background: Boolean = false, block: (OnnxModel) -> T,
+    ): T = withEngine(requestId, spec, clientLabel, kind, background) { block(it as OnnxModel) }
 
-    private suspend fun <T> withEngine(requestId: String, spec: ModelSpec, clientLabel: String, kind: String, block: (Closeable) -> T): T {
+    /**
+     * Interactive requests waiting or running. Background requests (an app indexing its photos) wait while there are any:
+     * a chat or a search goes first, the batch job continues after it, between two of its items.
+     */
+    private val interactive = MutableStateFlow(0)
+
+    private suspend fun <T> withEngine(
+        requestId: String, spec: ModelSpec, clientLabel: String, kind: String, background: Boolean, block: (Closeable) -> T,
+    ): T {
+        if (background) {
+            interactive.first { it == 0 }
+        } else {
+            interactive.update { it + 1 }
+        }
+        try {
+            return runQueued(requestId, spec, clientLabel, kind, block)
+        } finally {
+            if (!background) interactive.update { it - 1 }
+        }
+    }
+
+    private suspend fun <T> runQueued(requestId: String, spec: ModelSpec, clientLabel: String, kind: String, block: (Closeable) -> T): T {
         queued.update { it + 1 }
         var dequeued = false
         try {

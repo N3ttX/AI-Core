@@ -202,5 +202,8 @@ object AICoreContract {
         const val SHAPE = "shape"
         const val BYTES = "bytes"
         const val SHARED_MEMORY = "shared_memory"
+
+        /** A batch job's request (e.g. indexing a gallery): waits while chats or searches are waiting or running. */
+        const val BACKGROUND = "background"
     }
 }

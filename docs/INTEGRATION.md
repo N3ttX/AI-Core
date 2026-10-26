@@ -62,6 +62,14 @@ without a vision projector answer `INVALID_REQUEST`. For forms, a GBNF grammar w
 works far better with small models than free JSON; ask the model to copy dates as printed and
 convert them in your app.
 
+### Background requests
+
+AI Core Hub runs one request at a time. Batch jobs (indexing a gallery, scanning faces) should
+pass `background = true` (`embedImages`, `detectFaces`, `embed`, `runModel`,
+`GenerationRequest.background`): such requests wait while interactive requests of any app (a
+chat, a search) are waiting or running, so those answer at once and the batch job continues after
+them, between two of its items.
+
 ## Access
 
 A new app has to be allowed once by the user. Launch `core.accessRequestIntent()` with

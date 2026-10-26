@@ -286,12 +286,13 @@ class AICoreService : Service() {
             val params = samplingOf(request)
             val stops = request.getStringArray(Key.STOP)?.toList().orEmpty()
             val requestId = g.runtime.newRequestId()
+            val background = request.getBoolean(Key.BACKGROUND)
 
             g.runtime.submit(requestId, caller.uid) {
                 val started = System.currentTimeMillis()
                 try {
                     var clientGone = false
-                    val result = g.runtime.withModel(requestId, spec, caller.label, if (allImages.isEmpty()) "generate" else "see images") { model ->
+                    val result = g.runtime.withModel(requestId, spec, caller.label, if (allImages.isEmpty()) "generate" else "see images", background) { model ->
                         val images = if (projector == null) emptyList() else {
                             model.loadProjector(projector.absolutePath)
                             allImages.map { it.decode(maxDim).toRgbImage() }
@@ -358,13 +359,14 @@ class AICoreService : Service() {
             }
             val normalize = request.getBoolean(Key.NORMALIZE, true)
             val requestId = g.runtime.newRequestId()
+            val background = request.getBoolean(Key.BACKGROUND)
 
             g.runtime.submit(requestId, caller.uid) {
                 val started = System.currentTimeMillis()
                 try {
                     val each: (Int, FloatArray) -> Unit = { i, v -> callback.onEmbedding(requestId, i, v) }
                     val dim = if (spec.type == ModelType.IMAGE_TEXT) {
-                        g.runtime.withOnnx(requestId, spec, caller.label, "embed text") { model ->
+                        g.runtime.withOnnx(requestId, spec, caller.label, "embed text", background) { model ->
                             val encoder = ImageTextEncoder(model, ImageTextConfig.from(spec.configJson()))
                             var dim = 0
                             texts.forEachIndexed { i, text ->
@@ -376,7 +378,7 @@ class AICoreService : Service() {
                             dim
                         }
                     } else {
-                        g.runtime.withModel(requestId, spec, caller.label, "embed") { model ->
+                        g.runtime.withModel(requestId, spec, caller.label, "embed", background) { model ->
                             var dim = 0
                             texts.forEachIndexed { i, text ->
                                 if (g.runtime.isCancelled(requestId)) throw CancellationException("Cancelled")
@@ -446,11 +448,12 @@ class AICoreService : Service() {
             val config = ImageTextConfig.from(spec.configJson())
             val maxDim = request.getInt(Key.MAX_DIMENSION, 0).takeIf { it > 0 } ?: (config.imageSize * 3)
             val requestId = g.runtime.newRequestId()
+            val background = request.getBoolean(Key.BACKGROUND)
 
             g.runtime.submit(requestId, caller.uid) {
                 val started = System.currentTimeMillis()
                 try {
-                    val dim = g.runtime.withOnnx(requestId, spec, caller.label, "embed images") { model ->
+                    val dim = g.runtime.withOnnx(requestId, spec, caller.label, "embed images", background) { model ->
                         val encoder = ImageTextEncoder(model, config)
                         var dim = 0
                         images.forEachIndexed { i, image ->
@@ -500,11 +503,12 @@ class AICoreService : Service() {
             val withEmbeddings = request.getBoolean(Key.WITH_EMBEDDINGS, true)
             val maxDim = request.getInt(Key.MAX_DIMENSION, 0).takeIf { it > 0 } ?: 1600
             val requestId = g.runtime.newRequestId()
+            val background = request.getBoolean(Key.BACKGROUND)
 
             g.runtime.submit(requestId, caller.uid) {
                 val started = System.currentTimeMillis()
                 try {
-                    g.runtime.withOnnx(requestId, spec, caller.label, "detect faces") { model ->
+                    g.runtime.withOnnx(requestId, spec, caller.label, "detect faces", background) { model ->
                         val analyzer = FaceAnalyzer(model)
                         images.forEachIndexed { i, image ->
                             if (g.runtime.isCancelled(requestId)) throw CancellationException("Cancelled")
@@ -566,11 +570,12 @@ class AICoreService : Service() {
             }
             val outputs = request.getStringArray(Key.OUTPUTS)?.toSet()
             val requestId = g.runtime.newRequestId()
+            val background = request.getBoolean(Key.BACKGROUND)
 
             g.runtime.submit(requestId, caller.uid) {
                 val started = System.currentTimeMillis()
                 try {
-                    val results = g.runtime.withOnnx(requestId, spec, caller.label, "run $component") { model ->
+                    val results = g.runtime.withOnnx(requestId, spec, caller.label, "run $component", background) { model ->
                         val onnxInputs = inputs.associate { it.name to Tensors.toOnnx(model.env, it) }
                         try {
                             model.run(component, onnxInputs, outputs).use { result ->
